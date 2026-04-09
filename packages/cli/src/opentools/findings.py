@@ -1,9 +1,15 @@
 """Finding deduplication, CWE inference, and export."""
 
+import csv
+import hashlib
+import io
+import json
 from dataclasses import dataclass
 from typing import Optional
 
-from opentools.models import Finding, Confidence
+from pydantic import BaseModel, Field
+
+from opentools.models import Finding, Confidence, Severity
 
 
 CWE_KEYWORDS: dict[str, list[str]] = {
@@ -99,3 +105,141 @@ def _compute_confidence(new: Finding, existing: Finding, cwe_was_explicit: bool)
             and abs(new.line_start - existing.line_start) <= 2):
         return Confidence.HIGH
     return Confidence.MEDIUM
+
+
+# ---------------------------------------------------------------------------
+# SARIF 2.1.0 Pydantic models
+# ---------------------------------------------------------------------------
+
+class SarifPhysicalLocation(BaseModel):
+    artifactLocation: dict = Field(default_factory=dict)  # {"uri": "path/to/file"}
+    region: dict = Field(default_factory=dict)  # {"startLine": 42}
+
+
+class SarifLocation(BaseModel):
+    physicalLocation: SarifPhysicalLocation | None = None
+
+
+class SarifResult(BaseModel):
+    ruleId: str = ""
+    level: str = "warning"  # error|warning|note
+    message: dict = Field(default_factory=dict)  # {"text": "description"}
+    locations: list[SarifLocation] = Field(default_factory=list)
+    partialFingerprints: dict = Field(default_factory=dict)
+    relatedLocations: list[SarifLocation] = Field(default_factory=list)
+
+
+class SarifReportingDescriptor(BaseModel):
+    id: str
+    shortDescription: dict = Field(default_factory=dict)  # {"text": "..."}
+
+
+class SarifToolComponent(BaseModel):
+    name: str
+    version: str = "unknown"
+    rules: list[SarifReportingDescriptor] = Field(default_factory=list)
+
+
+class SarifTool(BaseModel):
+    driver: SarifToolComponent
+
+
+class SarifRun(BaseModel):
+    tool: SarifTool
+    results: list[SarifResult] = Field(default_factory=list)
+
+
+class SarifLog(BaseModel):
+    version: str = "2.1.0"
+    schema_uri: str = Field(
+        default="https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+        alias="$schema",
+    )
+    runs: list[SarifRun] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+# ---------------------------------------------------------------------------
+# Export helpers
+# ---------------------------------------------------------------------------
+
+def _severity_to_sarif_level(severity: Severity) -> str:
+    """Map severity to SARIF level."""
+    if severity in (Severity.CRITICAL, Severity.HIGH):
+        return "error"
+    if severity == Severity.MEDIUM:
+        return "warning"
+    return "note"
+
+
+def _finding_fingerprint(finding: Finding) -> str:
+    """Compute stable fingerprint for CI/CD tracking."""
+    key = f"{finding.cwe or ''}:{finding.file_path or ''}:{finding.line_start or 0}"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def export_sarif(findings: list[Finding]) -> dict:
+    """Export findings to SARIF 2.1.0 format. Returns a dict ready for json.dumps."""
+    from itertools import groupby
+    from operator import attrgetter
+
+    sorted_findings = sorted(findings, key=attrgetter("tool"))
+    runs = []
+
+    for tool_name, tool_findings_iter in groupby(sorted_findings, key=attrgetter("tool")):
+        tool_findings = list(tool_findings_iter)
+
+        # Collect unique CWEs as rules
+        seen_cwes: set[str] = set()
+        rules: list[SarifReportingDescriptor] = []
+        for f in tool_findings:
+            if f.cwe and f.cwe not in seen_cwes:
+                seen_cwes.add(f.cwe)
+                rules.append(SarifReportingDescriptor(
+                    id=f.cwe,
+                    shortDescription={"text": f.cwe},
+                ))
+
+        results = []
+        for f in tool_findings:
+            locations = []
+            if f.file_path:
+                loc = SarifLocation(
+                    physicalLocation=SarifPhysicalLocation(
+                        artifactLocation={"uri": f.file_path},
+                        region={"startLine": f.line_start} if f.line_start else {},
+                    )
+                )
+                locations.append(loc)
+
+            results.append(SarifResult(
+                ruleId=f.cwe or f.title,
+                level=_severity_to_sarif_level(f.severity),
+                message={"text": f.title + (f"\n{f.description}" if f.description else "")},
+                locations=locations,
+                partialFingerprints={"primaryLocationLineHash": _finding_fingerprint(f)},
+            ))
+
+        runs.append(SarifRun(
+            tool=SarifTool(driver=SarifToolComponent(name=tool_name, rules=rules)),
+            results=results,
+        ))
+
+    log = SarifLog(runs=runs)
+    return json.loads(log.model_dump_json(by_alias=True, exclude_none=True))
+
+
+def export_csv(findings: list[Finding]) -> str:
+    """Export findings to CSV string."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "severity", "cwe", "tool", "title", "file_path", "line_start", "status"])
+    for f in findings:
+        writer.writerow([f.id, f.severity, f.cwe or "", f.tool, f.title, f.file_path or "", f.line_start or "", f.status])
+    return output.getvalue()
+
+
+def export_json(findings: list[Finding]) -> str:
+    """Export findings to JSON string."""
+    return json.dumps([f.model_dump(mode="json") for f in findings], indent=2)
