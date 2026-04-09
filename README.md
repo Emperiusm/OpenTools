@@ -18,11 +18,12 @@
 </p>
 
 <p align="center">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-91%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-153%20passing-brightgreen">
   <img alt="Skills" src="https://img.shields.io/badge/skills-6-blue">
   <img alt="Tools" src="https://img.shields.io/badge/tools-50%2B-orange">
-  <img alt="Lines" src="https://img.shields.io/badge/lines-5K%20Python-yellow">
+  <img alt="Lines" src="https://img.shields.io/badge/lines-7K%20Python-yellow">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4">
+  <img alt="PRs" src="https://img.shields.io/badge/PRs-5%20merged-purple">
 </p>
 
 ---
@@ -204,11 +205,18 @@ opentools
 │   ├── generate <engagement> --template T   # Render Jinja2 template
 │   └── templates                            # List available templates
 │
+├── iocs
+│   ├── list <engagement> [--type X]         # List IOCs
+│   ├── export <engagement> --format F       # CSV, JSON, or STIX 2.1
+│   └── search <value>                       # Cross-engagement IOC search
+│
 ├── config
 │   ├── show                                 # Print resolved config
 │   └── validate                             # Check YAML files
 │
-└── audit list [--engagement E]              # View audit trail
+├── audit list [--engagement E]              # View audit trail
+│
+└── dashboard [--engagement E]               # Launch interactive TUI dashboard
 ```
 
 Every command supports `--json` for structured output, enabling Claude Code skills to invoke the CLI and parse results programmatically.
@@ -457,7 +465,7 @@ python -m pytest tests/ -v    # Run all 91 tests
 ### Project Stats
 
 ```
-2 packages | 12 modules | 91 tests | 5K lines of Python | 36 source files
+2 packages | 52 source files | 153 tests | 7K lines of Python | 5 PRs merged
 ```
 
 ### Tech Stack
@@ -490,7 +498,7 @@ The registry auto-discovers parser modules — no registration needed.
 
 ## Roadmap
 
-### Phase 1 (Current)
+### Phase 1
 
 - [x] 6 AI-guided security skills (pentest, RE, hardware, forensics, cloud, mobile)
 - [x] 9 slash commands with OWASP/MITRE methodology coverage
@@ -508,14 +516,20 @@ The registry auto-discovers parser modules — no registration needed.
 
 ### Phase 2
 
-- [ ] Textual TUI dashboard (live engagement status, container monitoring, findings table)
-- [ ] Dedup-on-insert in engagement store (currently standalone function)
-- [ ] Report template conversion to Jinja2 (`.md` → `.md.j2`)
-- [ ] Engagement export bundling (zip artifacts alongside JSON)
-- [ ] Additional output parsers (sqlmap, nmap, nikto, hashcat)
-- [ ] `opentools iocs export --format stix` (STIX 2.1 threat intel export)
+- [x] Dedup-on-insert with word-boundary CWE inference, path normalization, SQL-side filtering
+- [x] Report template conversion to Jinja2 with inheritance, shared macros, pre-computed mappings
+- [x] Engagement export bundling (ZIP with artifact streaming, missing file manifest)
+- [x] Additional output parsers (sqlmap, nmap XML+NSE, nikto, hashcat)
+- [x] STIX 2.1 IOC export with Indicator + Malware/Infrastructure enrichment, TLP marking
+- [x] Textual TUI dashboard — collapsible sidebar, summary strip, tabbed content, auto-refresh
+- [x] Dashboard finding detail modal with full evidence/remediation view
+- [x] Full interactive CRUD — engagement create/delete, finding add, IOC add
+- [x] Recipe runner screen with per-step progress via `run_with_progress()` generator
+- [x] Export/report/import dialogs with per-session memory
+- [x] Bulk finding actions with checkbox multi-select (Space, Ctrl+A, Ctrl+D)
+- [x] FormField and CheckboxTable reusable widgets
 
-### Phase 3
+### Phase 3 (Current)
 
 - [ ] Web dashboard (FastAPI + HTMX) for multi-engagement management
 - [ ] Team collaboration — shared engagements, finding assignment
