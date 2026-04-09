@@ -2,9 +2,19 @@
 
 ## Architecture
 
-This is a Claude Code security plugin that orchestrates 50+ tools through skills, commands, MCP servers, Docker containers, and CLI tools.
+This is a Claude Code security plugin that orchestrates 50+ tools through skills, commands, MCP servers, Docker containers, and CLI tools. It lives in a monorepo alongside the `opentools` CLI toolkit.
 
-### Directory Structure
+### Monorepo Layout
+```
+OpenTools/
+├── packages/
+│   ├── plugin/    — This plugin (skills, commands, config)
+│   └── cli/       — Python CLI toolkit (opentools command)
+├── engagements/   — Runtime engagement data (gitignored, SQLite-backed)
+└── docs/          — Design specs and plans
+```
+
+### Directory Structure (packages/plugin/)
 ```
 config/              — Centralized tool and server configuration
   tools.yaml         — Single source of truth for all tool paths
@@ -28,9 +38,26 @@ commands/            — Slash command definitions
   setup.md           — /setup
   recipe.md          — /recipe
 recipes.json         — Saved workflow recipes (shareable, reusable)
-engagements/         — Runtime engagement state files (gitignored)
 .env.example         — Template for required API keys and tool paths
 ```
+
+### CLI Integration
+
+Engagement state is now SQLite-backed and managed via the `opentools` CLI in `packages/cli/`. Skills should invoke `opentools <command> --json` for structured, deterministic tool management rather than reading/writing flat files directly.
+
+Key CLI commands available to skills:
+
+| Command | Purpose |
+|---------|---------|
+| `opentools engagement create` | Initialize a new engagement (returns engagement ID) |
+| `opentools findings list --json` | Query findings with severity/status filters |
+| `opentools findings export --format sarif` | Export findings for CI/CD pipelines |
+| `opentools preflight --skill <name> --json` | Check tool availability before running a skill |
+| `opentools containers start --profile <name>` | Start Docker containers for a skill profile |
+| `opentools recipe run <id> --json` | Execute a saved workflow recipe |
+| `opentools report generate` | Render a report from templates |
+
+Skills that previously wrote to `engagements/` flat files should now use `opentools engagement` subcommands. The `--json` flag on all commands returns structured output suitable for skill parsing.
 
 ### Key Conventions
 
