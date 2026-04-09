@@ -1,107 +1,77 @@
-# Security Toolkit Plugin
+# OpenTools
 
-Comprehensive security skills for Claude Code — penetration testing, reverse engineering, hardware security, digital forensics, cloud security, and mobile application security.
+Comprehensive security toolkit for Claude Code — penetration testing, reverse engineering, hardware security, digital forensics, cloud security, and mobile application security.
 
-## Skills
+## Structure
 
-| Skill | Description |
-|-------|-------------|
-| **pentest** | Guided penetration testing workflows (recon, scanning, exploitation, post-exploitation, reporting) with OWASP Testing Guide v4.2 coverage |
-| **reverse-engineering** | Binary analysis, decompilation, deobfuscation (PE/ELF/Mach-O/.NET/Java/JS/Python/Go/Rust) |
-| **hardware-re** | Firmware extraction, UART/JTAG/SWD analysis, BLE/WiFi/Zigbee wireless, CAN bus, side-channel awareness |
-| **forensics** | Digital forensics and incident response — memory forensics, log analysis, timeline reconstruction, IOC extraction |
-| **cloud-security** | AWS/Azure/GCP security assessment — IAM audit, storage exposure, network misconfig, compliance checking |
-| **mobile** | Android/iOS application security — static analysis, dynamic instrumentation, API testing, OWASP Mobile Top 10 |
+```
+OpenTools/
+├── packages/
+│   ├── plugin/    # Claude Code security plugin (skills, commands, config)
+│   └── cli/       # Python CLI toolkit (opentools command)
+├── engagements/   # Runtime data (gitignored)
+└── docs/          # Design specs and plans
+```
 
-## Commands
+## Quick Start
+
+```bash
+# Install the CLI
+cd packages/cli
+uv pip install -e .
+
+# Check your environment
+opentools setup
+
+# Verify tools
+opentools preflight --skill pentest
+```
+
+## CLI (`opentools`)
+
+The CLI provides deterministic orchestration for the security plugin:
 
 | Command | Description |
 |---------|-------------|
-| `/pentest` | Start a pentest engagement |
-| `/reverse` | Start a reverse engineering session |
-| `/hardware-re` | Start a hardware reverse engineering session |
-| `/vuln-scan` | Quick multi-tool vulnerability scan (source, web, binary, APK, container) |
-| `/setup` | Check tool availability and configure the environment |
-| `/recipe` | Run a saved security workflow recipe |
+| `opentools setup` | Check tool availability, generate environment profile |
+| `opentools preflight` | Health check tools for a specific skill |
+| `opentools engagement create` | Start a new engagement |
+| `opentools findings list` | List findings with severity/status filters |
+| `opentools findings export --format sarif` | Export findings for CI/CD |
+| `opentools recipe run <id>` | Execute a saved workflow recipe |
+| `opentools containers start --profile pentest` | Start Docker containers by profile |
+| `opentools report generate` | Generate reports from templates |
 
-## Recipes
+Run `opentools --help` for the full command list.
 
-Pre-built reusable workflows in `recipes.json`:
+## Plugin Skills
 
-| Recipe | Description |
-|--------|-------------|
-| `quick-web-audit` | Nuclei + Nikto + ffuf parallel web scan |
-| `apk-analysis` | Full Android APK static analysis pipeline |
-| `binary-triage` | Automated binary triage with Arkana + capa + YARA |
-| `source-code-audit` | CPG taint analysis + Semgrep + secret scanning |
-| `firmware-extract` | Firmware extraction, survey, and vuln scan |
-
-## Architecture
-
-```
-config/              — Tool registry, MCP server config, user profiles
-shared/              — Shared engagement state, report templates
-skills/              — 6 skill modules (pentest, RE, hardware-RE, forensics, cloud, mobile)
-commands/            — 6 slash commands
-recipes.json         — Saved workflow recipes
-.env.example         — API key template
-```
-
-See [CLAUDE.md](CLAUDE.md) for development conventions.
-
-## Required MCP Servers
-
-| Server | Purpose | Used By |
-|--------|---------|---------|
-| codebadger | Joern static analysis (CPG, taint flows) | pentest, RE, hardware-RE, cloud |
-| cyberchef | 463+ encoding/decoding/crypto operations | pentest, RE, hardware-RE, forensics |
-| semgrep-mcp | Rule-based vulnerability scanning | pentest |
-| nmap-mcp | Network reconnaissance | pentest |
-| arkana | 250+ binary analysis tools | RE, hardware-RE |
-| ghydramcp | Ghidra bridge for disassembly/decompilation | RE, hardware-RE |
-| deobfuscate-mcp | JS bundle analysis and deobfuscation | pentest, RE |
-| wazuh-mcp | SIEM alert analysis, threat hunting | pentest, forensics |
-| elasticsearch-mcp | Log search, timeline reconstruction | pentest, forensics |
-
-## Docker Containers (30+)
-
-Managed via docker-compose profiles:
-
-```bash
-# Start containers by profile
-docker compose --profile pentest up -d
-docker compose --profile re up -d
-docker compose --profile hardware up -d
-docker compose --profile cloud up -d
-
-# Or start individually
-docker compose up nuclei-mcp sqlmap-mcp ffuf-mcp -d
-```
-
-See `config/tools.yaml` for the complete container list.
-
-## CLI Tools
-
-| Tool | Purpose |
-|------|---------|
-| webcrack, synchrony | JS deobfuscation |
-| jadx | Java/Android decompilation |
-| ILSpy | .NET decompilation |
-| retdec-decompiler | Multi-arch native binary decompilation |
-| sliver-server | C2 framework (pentest only, requires explicit authorization) |
-| frida | Dynamic instrumentation (mobile/native) |
-| volatility3 | Memory forensics |
-| theHarvester | OSINT email/subdomain harvesting |
-
-## Setup
-
-Run `/setup` to check which tools are available in your environment and get a compatibility report. See `.env.example` for required API keys.
+| Skill | Description |
+|-------|-------------|
+| **pentest** | Penetration testing workflows with OWASP v4.2 coverage |
+| **reverse-engineering** | Binary analysis (PE/ELF/Mach-O/.NET/Java/JS/Python/Go/Rust) |
+| **hardware-re** | Firmware, UART/JTAG, BLE/WiFi, CAN bus, side-channel |
+| **forensics** | Memory forensics, log analysis, timeline reconstruction |
+| **cloud-security** | AWS/Azure/GCP assessment, IAM audit, compliance |
+| **mobile** | Android/iOS static + dynamic analysis, OWASP Mobile Top 10 |
 
 ## Configuration
 
-| File | Purpose |
-|------|---------|
-| `config/tools.yaml` | Centralized tool registry — all paths, containers, CLI tools |
-| `config/mcp-servers.yaml` | MCP server connections, health checks, skill dependencies |
-| `config/profiles.yaml` | User environment profile (generated by `/setup`) |
-| `.env.example` | API key template (Shodan, VirusTotal, OTX, etc.) |
+Tool paths and MCP server configs are in `packages/plugin/config/`:
+- `tools.yaml` — centralized tool registry
+- `mcp-servers.yaml` — MCP server connections and health checks
+- `profiles.yaml` — user environment profile
+
+Copy `.env.example` to `.env` and fill in API keys.
+
+## Development
+
+```bash
+# Install dev dependencies
+cd packages/cli
+uv pip install -e .
+pip install pytest
+
+# Run tests
+python -m pytest tests/ -v
+```
