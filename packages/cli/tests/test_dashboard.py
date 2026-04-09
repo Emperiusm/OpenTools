@@ -251,3 +251,19 @@ def test_store_delete_engagement_cascade(populated_state):
     assert len(populated_state.store.get_timeline("eng-1")) == 0
     with pytest.raises(KeyError):
         populated_state.store.get("eng-1")
+
+
+def test_checkbox_table_state():
+    from opentools.dashboard.widgets.checkbox_table import CheckboxTable
+    table = CheckboxTable()
+    assert isinstance(table._checked, set)
+    assert table.get_checked_keys() == []
+
+
+def test_state_bulk_flag(populated_state):
+    populated_state.selected_id = "eng-1"
+    populated_state.refresh_selected()
+    for f in populated_state.findings:
+        populated_state.flag_false_positive(f.id)
+    refreshed = populated_state.store.get_findings("eng-1")
+    assert all(f.false_positive for f in refreshed)

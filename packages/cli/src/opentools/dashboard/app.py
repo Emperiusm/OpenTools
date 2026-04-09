@@ -35,6 +35,10 @@ class DashboardApp(App):
         Binding("2", "switch_tab('timeline')", "Timeline"),
         Binding("3", "switch_tab('iocs')", "IOCs"),
         Binding("4", "switch_tab('containers')", "Containers"),
+        Binding("n", "new_engagement", "New"),
+        Binding("R", "run_recipe", "Recipe", key_display="Shift+R"),
+        Binding("G", "generate_report", "Report", key_display="Shift+G"),
+        Binding("I", "import_engagement", "Import", key_display="Shift+I"),
     ]
 
     def __init__(
@@ -191,3 +195,54 @@ class DashboardApp(App):
             self.query_one(TabbedContent).active = tab_id
         except Exception:
             pass
+
+    def action_new_engagement(self) -> None:
+        from opentools.dashboard.dialogs.engagement_create import EngagementCreateDialog
+        def on_dismiss(result):
+            if result:
+                self._load_engagements()
+        self.push_screen(EngagementCreateDialog(self.state), callback=on_dismiss)
+
+    def action_run_recipe(self) -> None:
+        from opentools.dashboard.dialogs.recipe_launch import RecipeLaunchDialog
+        # Build recipe list
+        try:
+            plugin_dir = self.state.config.plugin_dir if self.state.config and self.state.config.plugin_dir else None
+            if plugin_dir:
+                from opentools.recipes import RecipeRunner
+                from opentools.models import ToolkitConfig
+                recipes_path = plugin_dir / "recipes.json"
+                runner = RecipeRunner(self.state.config or ToolkitConfig(), recipes_path)
+                recipes = runner.list_recipes()
+            else:
+                recipes = []
+                runner = None
+        except Exception:
+            recipes = []
+            runner = None
+
+        if not recipes:
+            self.notify("No recipes found", severity="warning")
+            return
+
+        def on_dismiss(result):
+            if result and runner:
+                recipe_id, variables, dry_run = result
+                from opentools.dashboard.screens.recipe_runner import RecipeRunnerScreen
+                self.push_screen(RecipeRunnerScreen(runner, recipe_id, variables, dry_run))
+
+        self.push_screen(RecipeLaunchDialog(self.state, recipes), callback=on_dismiss)
+
+    def action_generate_report(self) -> None:
+        from opentools.dashboard.dialogs.report_dialog import ReportDialog
+        def on_dismiss(result):
+            if result:
+                self.notify(f"Report config: {result}")  # actual generation in future
+        self.push_screen(ReportDialog(self.state), callback=on_dismiss)
+
+    def action_import_engagement(self) -> None:
+        from opentools.dashboard.dialogs.import_dialog import ImportDialog
+        def on_dismiss(result):
+            if result:
+                self._load_engagements()
+        self.push_screen(ImportDialog(self.state), callback=on_dismiss)

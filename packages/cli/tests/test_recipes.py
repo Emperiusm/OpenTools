@@ -122,3 +122,21 @@ def test_run_parallel_with_deps(runner):
     assert len(result.steps) == 2
     # Both should succeed — b depends on a but both are echo commands
     assert all(s.status == "success" for s in result.steps)
+
+
+def test_run_with_progress(recipes_file):
+    import asyncio
+    config = ToolkitConfig()
+    runner = RecipeRunner(config, recipes_file)
+
+    events = []
+    async def collect():
+        async for event_type, step_name, result in runner.run_with_progress(
+            "test-recipe", {"target": "hello"}
+        ):
+            events.append((event_type, step_name))
+
+    asyncio.run(collect())
+    assert len(events) == 4  # 2 steps x (started + completed)
+    assert events[0] == ("started", "step1")
+    assert events[1][0] == "completed"

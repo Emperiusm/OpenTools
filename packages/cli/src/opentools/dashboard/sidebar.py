@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Label
@@ -44,6 +45,11 @@ class EngagementSidebar(Widget):
     DEFAULT_CSS sets width 28, docks left, and adds a right border.
     The ``Collapsed`` class hides the widget entirely (``display: none``).
     """
+
+    BINDINGS = [
+        Binding("d", "delete_engagement", "Delete", show=True),
+        Binding("e", "export_engagement", "Export", show=True),
+    ]
 
     DEFAULT_CSS = """
     EngagementSidebar {
@@ -123,3 +129,23 @@ class EngagementSidebar(Widget):
         list_view.clear()
         for eng, crit, high in filtered:
             list_view.append(EngagementListItem(eng, crit, high))
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def action_delete_engagement(self) -> None:
+        if self.state.selected_id:
+            from opentools.dashboard.dialogs.engagement_delete import EngagementDeleteDialog
+            def on_dismiss(result):
+                if result:
+                    self.update_from_state()
+            self.app.push_screen(
+                EngagementDeleteDialog(self.state, self.state.selected_id),
+                callback=on_dismiss,
+            )
+
+    def action_export_engagement(self) -> None:
+        if self.state.selected_id:
+            from opentools.dashboard.dialogs.export_dialog import ExportDialog
+            self.app.push_screen(ExportDialog(self.state, "engagement"))
