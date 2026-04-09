@@ -125,3 +125,100 @@ def test_empty_input():
     parser = get_parser("semgrep")
     findings = parser(json.dumps({"results": []}))
     assert findings == []
+
+
+SQLMAP_OUTPUT = json.dumps({
+    "data": [{"type": 1, "value": [{
+        "place": "GET", "parameter": "id", "dbms": "MySQL",
+        "title": "AND boolean-based blind",
+    }]}]
+})
+
+NMAP_XML_OUTPUT = """<?xml version="1.0"?>
+<nmaprun>
+<host><address addr="10.0.0.1" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="22">
+<state state="open"/><service name="ssh" product="OpenSSH" version="8.9"/>
+</port>
+<port protocol="tcp" portid="443">
+<state state="open"/><service name="https"/>
+<script id="ssl-enum-ciphers" output="TLSv1.0 enabled"/>
+</port>
+</ports>
+</host>
+</nmaprun>"""
+
+NIKTO_OUTPUT = json.dumps({
+    "ip": "10.0.0.1", "port": "80",
+    "vulnerabilities": [
+        {"id": "000726", "OSVDB": "0", "method": "GET",
+         "url": "/admin/", "msg": "Default credentials found for admin panel"},
+        {"id": "999999", "OSVDB": "0", "method": "GET",
+         "url": "/info", "msg": "Server version disclosure in headers"},
+    ]
+})
+
+HASHCAT_OUTPUT = "5f4dcc3b5aa765d61d8327deb882cf99:password\ne99a18c428cb38d5f260853678922e03:abc123"
+
+
+def test_sqlmap_parser():
+    parser = get_parser("sqlmap")
+    assert parser is not None
+    findings = parser(SQLMAP_OUTPUT)
+    assert len(findings) == 1
+    assert findings[0].cwe == "CWE-89"
+    assert findings[0].severity.value == "critical"
+    assert "id" in findings[0].title.lower() or "boolean" in findings[0].title.lower()
+
+
+def test_nmap_parser_ports():
+    parser = get_parser("nmap")
+    assert parser is not None
+    findings = parser(NMAP_XML_OUTPUT)
+    port_findings = [f for f in findings if f.severity.value == "info"]
+    assert len(port_findings) >= 1
+
+
+def test_nmap_parser_nse_scripts():
+    parser = get_parser("nmap")
+    findings = parser(NMAP_XML_OUTPUT)
+    vuln_findings = [f for f in findings if f.severity.value != "info"]
+    assert len(vuln_findings) >= 1
+    assert any(f.cwe == "CWE-327" for f in vuln_findings)
+
+
+def test_nikto_parser():
+    parser = get_parser("nikto")
+    assert parser is not None
+    findings = parser(NIKTO_OUTPUT)
+    assert len(findings) == 2
+
+
+def test_nikto_parser_severity_heuristic():
+    parser = get_parser("nikto")
+    findings = parser(NIKTO_OUTPUT)
+    severities = [f.severity.value for f in findings]
+    assert "high" in severities
+    assert "low" in severities
+
+
+def test_hashcat_parser():
+    parser = get_parser("hashcat")
+    assert parser is not None
+    findings = parser(HASHCAT_OUTPUT)
+    assert len(findings) == 2
+    assert all(f.cwe == "CWE-521" for f in findings)
+    assert all(f.severity.value == "high" for f in findings)
+
+
+def test_hashcat_parser_empty():
+    parser = get_parser("hashcat")
+    findings = parser("")
+    assert findings == []
+
+
+def test_all_new_parsers_registered():
+    parsers = list_parsers()
+    for name in ["sqlmap", "nmap", "nikto", "hashcat"]:
+        assert name in parsers, f"{name} not in parser registry"
