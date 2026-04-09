@@ -151,3 +151,73 @@ def test_import_creates_new_engagement(store, sample_engagement, tmp_path):
     imported_findings = store.get_findings(new_id)
     assert len(imported_findings) == 1
     assert imported_findings[0].title == "Test Finding"
+
+
+def test_add_finding_dedup_merges_duplicate(store, sample_engagement):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    f1 = Finding(id="f-1", engagement_id=sample_engagement.id,
+                 tool="semgrep", title="SQL Injection", severity=Severity.HIGH,
+                 cwe="CWE-89", file_path="src/api.py", line_start=42, created_at=now)
+    id1 = store.add_finding(f1)
+    assert id1 == "f-1"
+
+    f2 = Finding(id="f-2", engagement_id=sample_engagement.id,
+                 tool="codebadger", title="Taint flow to SQL sink", severity=Severity.CRITICAL,
+                 cwe="CWE-89", file_path="src/api.py", line_start=43, created_at=now)
+    id2 = store.add_finding(f2)
+    assert id2 == "f-1"
+
+    findings = store.get_findings(sample_engagement.id)
+    assert len(findings) == 1
+    assert "codebadger" in findings[0].corroborated_by
+    assert findings[0].severity == Severity.CRITICAL
+
+
+def test_add_finding_dedup_distinct_far_lines(store, sample_engagement):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    store.add_finding(Finding(id="f-1", engagement_id=sample_engagement.id,
+                              tool="semgrep", title="SQL Injection", severity=Severity.HIGH,
+                              cwe="CWE-89", file_path="src/api.py", line_start=42, created_at=now))
+    store.add_finding(Finding(id="f-2", engagement_id=sample_engagement.id,
+                              tool="codebadger", title="Another SQLi", severity=Severity.HIGH,
+                              cwe="CWE-89", file_path="src/api.py", line_start=200, created_at=now))
+    findings = store.get_findings(sample_engagement.id)
+    assert len(findings) == 2
+
+
+def test_add_finding_dedup_normalized_paths(store, sample_engagement):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    store.add_finding(Finding(id="f-1", engagement_id=sample_engagement.id,
+                              tool="semgrep", title="XSS", severity=Severity.HIGH,
+                              cwe="CWE-79", file_path="src/views/index.js", line_start=10, created_at=now))
+    id2 = store.add_finding(Finding(id="f-2", engagement_id=sample_engagement.id,
+                                    tool="nuclei", title="Reflected XSS", severity=Severity.MEDIUM,
+                                    cwe="CWE-79", file_path="./src\\views\\index.js", line_start=11, created_at=now))
+    assert id2 == "f-1"
+    findings = store.get_findings(sample_engagement.id)
+    assert len(findings) == 1
+
+
+def test_add_findings_batch(store, sample_engagement):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    findings = [
+        Finding(id="f-1", engagement_id=sample_engagement.id,
+                tool="semgrep", title="SQL Injection", severity=Severity.HIGH,
+                cwe="CWE-89", file_path="src/api.py", line_start=42, created_at=now),
+        Finding(id="f-2", engagement_id=sample_engagement.id,
+                tool="nuclei", title="SQLi detected", severity=Severity.CRITICAL,
+                cwe="CWE-89", file_path="src/api.py", line_start=43, created_at=now),
+        Finding(id="f-3", engagement_id=sample_engagement.id,
+                tool="semgrep", title="XSS in template", severity=Severity.MEDIUM,
+                cwe="CWE-79", file_path="src/views.py", line_start=10, created_at=now),
+    ]
+    ids = store.add_findings_batch(findings)
+    assert len(ids) == 3
+    assert ids[1] == ids[0]
+    assert ids[2] != ids[0]
+    all_findings = store.get_findings(sample_engagement.id)
+    assert len(all_findings) == 2
