@@ -20,6 +20,8 @@ class IOCsTab(Widget):
 
     BINDINGS = [
         Binding("/", "toggle_filter", "Filter"),
+        Binding("i", "add_ioc", "Add IOC", show=True),
+        Binding("e", "export_iocs", "Export", show=True),
     ]
 
     def __init__(self, state: DashboardState, **kwargs) -> None:
@@ -85,6 +87,17 @@ class IOCsTab(Widget):
         filter_input.toggle_class("hidden")
         if not filter_input.has_class("hidden"):
             filter_input.focus()
+
+    def action_add_ioc(self) -> None:
+        from opentools.dashboard.dialogs.ioc_add import IOCAddDialog
+        def on_dismiss(result):
+            if result:
+                self.update_from_state()
+        self.app.push_screen(IOCAddDialog(self.state), callback=on_dismiss)
+
+    def action_export_iocs(self) -> None:
+        from opentools.dashboard.dialogs.export_dialog import ExportDialog
+        self.app.push_screen(ExportDialog(self.state, "iocs"))
 
     # ------------------------------------------------------------------
     # Event handlers

@@ -1,13 +1,14 @@
-"""FindingsTab — filterable DataTable of security findings."""
+"""FindingsTab — filterable CheckboxTable of security findings."""
 
 from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widget import Widget
-from textual.widgets import DataTable, Input
+from textual.widgets import Input
 
 from opentools.dashboard.state import DashboardState
+from opentools.dashboard.widgets.checkbox_table import CheckboxTable
 
 
 class FindingsTab(Widget):
@@ -15,10 +16,12 @@ class FindingsTab(Widget):
 
     Bindings
     --------
-    f        — flag the selected finding as a false positive
+    f        — flag the selected finding as a false positive (or all checked)
     s        — cycle the selected finding's status
     enter    — show full detail in a modal overlay
     /        — toggle the filter input
+    a        — add a new finding
+    e        — export findings
     """
 
     BINDINGS = [
@@ -26,6 +29,8 @@ class FindingsTab(Widget):
         Binding("s", "cycle_status", "Cycle Status"),
         Binding("enter", "show_detail", "Detail"),
         Binding("/", "toggle_filter", "Filter"),
+        Binding("a", "add_finding", "Add", show=True),
+        Binding("e", "export_findings", "Export", show=True),
     ]
 
     # Severity → Rich markup label
@@ -48,8 +53,8 @@ class FindingsTab(Widget):
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="Filter findings…", id="findings-filter", classes="hidden")
-        table: DataTable = DataTable(id="findings-table", cursor_type="row")
-        table.add_columns("#", "Severity", "CWE", "Tool", "Title", "Location", "Status")
+        table = CheckboxTable(id="findings-table", cursor_type="row")
+        table.add_columns("", "#", "Severity", "CWE", "Tool", "Title", "Location", "Status")
         yield table
 
     # ------------------------------------------------------------------
@@ -58,7 +63,7 @@ class FindingsTab(Widget):
 
     def update_from_state(self) -> None:
         """Clear and rebuild the table from ``self.state.findings``."""
-        table = self.query_one("#findings-table", DataTable)
+        table = self.query_one("#findings-table", CheckboxTable)
         table.clear()
 
         needle = self._filter_text.strip().lower()
@@ -99,7 +104,7 @@ class FindingsTab(Widget):
 
             status = str(finding.status)
 
-            table.add_row(
+            table.add_checked_row(
                 str(row_num),
                 severity_cell,
                 cwe,
@@ -116,12 +121,20 @@ class FindingsTab(Widget):
     # ------------------------------------------------------------------
 
     def action_flag_fp(self) -> None:
-        """Flag the selected finding as a false positive."""
-        finding = self._get_selected_finding()
-        if finding is None:
-            return
-        self.state.flag_false_positive(finding.id)
-        self.app.notify(f"Flagged as false positive: {finding.title}")
+        """Flag the selected or all checked findings as false positives."""
+        table = self.query_one(CheckboxTable)
+        checked = table.get_checked_keys()
+        if checked:
+            for fid in checked:
+                self.state.flag_false_positive(fid)
+            self.app.notify(f"Flagged {len(checked)} finding(s)")
+            table.action_deselect_all()
+        else:
+            finding = self._get_selected_finding()
+            if finding is None:
+                return
+            self.state.flag_false_positive(finding.id)
+            self.app.notify(f"Flagged as false positive: {finding.title}")
         self.update_from_state()
 
     def action_cycle_status(self) -> None:
@@ -148,6 +161,17 @@ class FindingsTab(Widget):
         if not filter_input.has_class("hidden"):
             filter_input.focus()
 
+    def action_add_finding(self) -> None:
+        from opentools.dashboard.dialogs.finding_add import FindingAddDialog
+        def on_dismiss(result):
+            if result:
+                self.update_from_state()
+        self.app.push_screen(FindingAddDialog(self.state), callback=on_dismiss)
+
+    def action_export_findings(self) -> None:
+        from opentools.dashboard.dialogs.export_dialog import ExportDialog
+        self.app.push_screen(ExportDialog(self.state, "findings"))
+
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
@@ -164,7 +188,7 @@ class FindingsTab(Widget):
 
     def _get_selected_finding(self):
         """Return the Finding at the current cursor row, or None."""
-        table = self.query_one("#findings-table", DataTable)
+        table = self.query_one("#findings-table", CheckboxTable)
         if table.cursor_row is None:
             return None
 

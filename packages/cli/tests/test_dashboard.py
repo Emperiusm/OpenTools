@@ -209,3 +209,61 @@ def test_app_constructs():
         db_path = Path(tmp) / "test.db"
         app = DashboardApp(db_path=db_path)
         assert app.TITLE == "OpenTools Dashboard"
+
+
+def test_state_create_engagement(dashboard_state):
+    eng_id = dashboard_state.create_engagement("new-test", "10.0.0.2", "pentest")
+    assert eng_id is not None
+    dashboard_state.refresh_engagements()
+    assert any(e.id == eng_id for e in dashboard_state.engagements)
+
+
+def test_state_delete_engagement(populated_state):
+    populated_state.selected_id = "eng-1"
+    populated_state.refresh_selected()
+    assert len(populated_state.findings) > 0
+    populated_state.delete_engagement("eng-1")
+    populated_state.refresh_engagements()
+    assert not any(e.id == "eng-1" for e in populated_state.engagements)
+    assert populated_state.selected_id is None
+
+
+def test_state_add_finding(populated_state):
+    fid = populated_state.add_finding(
+        "eng-1", tool="manual", title="New finding", severity="high",
+    )
+    assert fid is not None
+    findings = populated_state.store.get_findings("eng-1")
+    assert any(f.id == fid for f in findings)
+
+
+def test_state_add_ioc(populated_state):
+    ioc_id = populated_state.add_ioc("eng-1", "domain", "evil.com", "C2 server")
+    assert ioc_id is not None
+    iocs = populated_state.store.get_iocs("eng-1")
+    assert any(i.id == ioc_id for i in iocs)
+
+
+def test_store_delete_engagement_cascade(populated_state):
+    populated_state.store.delete_engagement("eng-1")
+    assert len(populated_state.store.get_findings("eng-1")) == 0
+    assert len(populated_state.store.get_iocs("eng-1")) == 0
+    assert len(populated_state.store.get_timeline("eng-1")) == 0
+    with pytest.raises(KeyError):
+        populated_state.store.get("eng-1")
+
+
+def test_checkbox_table_state():
+    from opentools.dashboard.widgets.checkbox_table import CheckboxTable
+    table = CheckboxTable()
+    assert isinstance(table._checked, set)
+    assert table.get_checked_keys() == []
+
+
+def test_state_bulk_flag(populated_state):
+    populated_state.selected_id = "eng-1"
+    populated_state.refresh_selected()
+    for f in populated_state.findings:
+        populated_state.flag_false_positive(f.id)
+    refreshed = populated_state.store.get_findings("eng-1")
+    assert all(f.false_positive for f in refreshed)

@@ -1,0 +1,1 @@
+"""Dashboard full screens."""

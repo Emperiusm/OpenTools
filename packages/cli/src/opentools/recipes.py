@@ -205,6 +205,45 @@ class RecipeRunner:
 
         return [results[step.name] for step, _ in steps]
 
+    async def run_with_progress(self, recipe_id: str, variables: dict[str, str],
+                                dry_run: bool = False):
+        """Execute recipe yielding per-step progress events.
+
+        Yields tuples: (event_type, step_name, result_or_none)
+        - ("started", step_name, None)
+        - ("completed", step_name, StepResult)
+        - ("error", "validation", StepResult)  — on missing required variable
+        """
+        recipe = self.get_recipe(recipe_id)
+
+        # Apply defaults and validate required variables
+        for vname, vspec in recipe.variables.items():
+            if vname not in variables:
+                if vspec.default is not None:
+                    variables[vname] = vspec.default
+                elif vspec.required:
+                    yield ("error", "validation", StepResult(
+                        step_name="validation", status="error",
+                        stderr=f"Missing required variable: {vname}"))
+                    return
+
+        resolved_steps = []
+        for step in recipe.steps:
+            resolved_cmd = self.substitute_variables(step.command, variables)
+            resolved_steps.append((step, resolved_cmd))
+
+        if dry_run:
+            for step, cmd in resolved_steps:
+                yield ("completed", step.name, StepResult(
+                    step_name=step.name, status="dry_run",
+                    stdout=f"Would execute: {cmd}"))
+            return
+
+        for step, cmd in resolved_steps:
+            yield ("started", step.name, None)
+            result = await self._run_step(step, cmd, quiet=True)
+            yield ("completed", step.name, result)
+
     async def _run_step(self, step: RecipeStep, command: str, quiet: bool) -> StepResult:
         """Execute a single recipe step."""
         if step.step_type == StepType.MANUAL:

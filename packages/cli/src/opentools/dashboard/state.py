@@ -114,6 +114,63 @@ class DashboardState:
         return changes
 
     # ------------------------------------------------------------------
+    # Engagement CRUD
+    # ------------------------------------------------------------------
+
+    def create_engagement(self, name: str, target: str, eng_type: str,
+                          scope: str | None = None) -> str:
+        """Create a new engagement. Returns the new ID."""
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        from opentools.models import Engagement, EngagementType, EngagementStatus
+        now = datetime.now(timezone.utc)
+        eng = Engagement(
+            id=str(uuid4()), name=name, target=target,
+            type=EngagementType(eng_type),
+            status=EngagementStatus.ACTIVE,
+            scope=scope, created_at=now, updated_at=now,
+        )
+        return self.store.create(eng)
+
+    def delete_engagement(self, engagement_id: str) -> None:
+        """Delete engagement and all associated data."""
+        self.store.delete_engagement(engagement_id)
+        if self.selected_id == engagement_id:
+            self.selected_id = None
+            self.summary = None
+            self.findings = []
+            self.timeline = []
+            self.iocs = []
+
+    def add_finding(self, engagement_id: str, tool: str, title: str,
+                    severity: str, cwe: str | None = None,
+                    file_path: str | None = None, line_start: int | None = None,
+                    description: str | None = None, evidence: str | None = None) -> str:
+        """Add a finding to an engagement. Returns the new ID."""
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        from opentools.models import Finding, Severity
+        finding = Finding(
+            id=str(uuid4()), engagement_id=engagement_id,
+            tool=tool, title=title, severity=Severity(severity),
+            cwe=cwe, file_path=file_path, line_start=line_start,
+            description=description, evidence=evidence,
+            created_at=datetime.now(timezone.utc),
+        )
+        return self.store.add_finding(finding)
+
+    def add_ioc(self, engagement_id: str, ioc_type: str, value: str,
+                context: str | None = None) -> str:
+        """Add an IOC to an engagement. Returns the new ID."""
+        from uuid import uuid4
+        from opentools.models import IOC, IOCType
+        ioc = IOC(
+            id=str(uuid4()), engagement_id=engagement_id,
+            ioc_type=IOCType(ioc_type), value=value, context=context,
+        )
+        return self.store.add_ioc(ioc)
+
+    # ------------------------------------------------------------------
     # Finding mutations
     # ------------------------------------------------------------------
 

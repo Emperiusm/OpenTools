@@ -114,6 +114,21 @@ class EngagementStore:
         )
         self._conn.commit()
 
+    def delete_engagement(self, engagement_id: str) -> None:
+        """Delete an engagement and all associated data."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute("DELETE FROM audit_log WHERE engagement_id = ?", (engagement_id,))
+            self._conn.execute("DELETE FROM artifacts WHERE engagement_id = ?", (engagement_id,))
+            self._conn.execute("DELETE FROM iocs WHERE engagement_id = ?", (engagement_id,))
+            self._conn.execute("DELETE FROM timeline_events WHERE engagement_id = ?", (engagement_id,))
+            self._conn.execute("DELETE FROM findings WHERE engagement_id = ?", (engagement_id,))
+            self._conn.execute("DELETE FROM engagements WHERE id = ?", (engagement_id,))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
     def get_summary(self, engagement_id: str) -> EngagementSummary:
         engagement = self.get(engagement_id)
 
