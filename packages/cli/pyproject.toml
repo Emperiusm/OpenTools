@@ -11,6 +11,7 @@ dependencies = [
     "sqlite-utils>=3.37",
     "jinja2>=3.1",
     "stix2>=3.0",
+    "textual>=8.0",
 ]
 
 [project.scripts]

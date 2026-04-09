@@ -145,6 +145,21 @@ def preflight(
         out.print(table)
 
 
+@app.command()
+def dashboard(
+    engagement: str = typer.Option(None, help="Auto-select engagement on launch"),
+):
+    """Launch the interactive TUI dashboard."""
+    from opentools.dashboard import launch_dashboard as _launch_dash
+    try:
+        plugin_dir, config = _get_config()
+        db_path = plugin_dir.parent.parent / "engagements" / "opentools.db"
+        _launch_dash(db_path=db_path, plugin_dir=plugin_dir, engagement=engagement)
+    except Exception:
+        from pathlib import Path as _Path
+        _launch_dash(db_path=_Path("engagements/opentools.db"), engagement=engagement)
+
+
 # ---------------------------------------------------------------------------
 # Engagement commands
 # ---------------------------------------------------------------------------
