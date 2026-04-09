@@ -1,0 +1,133 @@
+# MCP Server Configuration
+# Defines connection details, health checks, and dependency mapping for all MCP servers.
+# Skills reference this file to determine which servers they need and how to verify availability.
+
+servers:
+  codebadger:
+    transport: http
+    url: "http://localhost:4242/mcp"
+    health_check: "curl -sf http://localhost:4242/health"
+    startup:
+      command: "cd ${CODEBADGER_DIR} && docker compose up -d && .venv/Scripts/python.exe main.py"
+      wait_seconds: 10
+    capabilities:
+      - cpg_generation
+      - taint_analysis
+      - vulnerability_detection
+      - call_graph
+      - control_flow_graph
+    supported_languages: [java, c, cpp, javascript, python, go, php, ruby]
+
+  semgrep-mcp:
+    transport: stdio
+    command: "${SEMGREP_MCP_DIR}/.venv/Scripts/python.exe -m semgrep_mcp.server"
+    health_check: "test -f ${SEMGREP_MCP_DIR}/.venv/Scripts/python.exe"
+    capabilities:
+      - rule_based_scanning
+      - custom_rules
+      - auto_config
+
+  nmap-mcp:
+    transport: stdio
+    command: "docker exec -i nmap-mcp python server.py"
+    health_check: "docker ps --filter name=nmap-mcp --filter status=running -q"
+    capabilities:
+      - port_scanning
+      - service_detection
+      - os_detection
+      - script_scanning
+
+  cyberchef:
+    transport: stdio
+    command: "node ${CYBERCHEF_DIR}/src/node/mcp-server.mjs"
+    health_check: "node -e \"require('${CYBERCHEF_DIR}/src/node/mcp-server.mjs')\""
+    capabilities:
+      - encoding_decoding
+      - crypto_operations
+      - data_transforms
+    operation_count: 463
+
+  wazuh-mcp:
+    transport: stdio
+    command: "${WAZUH_MCP_DIR}/.venv/Scripts/python.exe -m wazuh_mcp_server"
+    health_check: "curl -sf https://${WAZUH_HOST}:${WAZUH_PORT} -k"
+    env_required: [WAZUH_HOST, WAZUH_PORT, WAZUH_USER, WAZUH_PASSWORD]
+    capabilities:
+      - siem_alerts
+      - threat_hunting
+      - agent_management
+      - vulnerability_reports
+
+  elasticsearch-mcp:
+    transport: stdio
+    command: "${ES_MCP_DIR}/.venv/Scripts/python.exe -m src.server"
+    health_check: "curl -sf ${ES_HOST}/_cluster/health"
+    env_required: [ES_HOST]
+    capabilities:
+      - log_search
+      - timeline_reconstruction
+      - index_management
+
+  deobfuscate-mcp:
+    transport: stdio
+    command: "node ${DEOBFUSCATE_DIR}/dist/index.js"
+    health_check: "test -f ${DEOBFUSCATE_DIR}/dist/index.js"
+    capabilities:
+      - ast_deobfuscation
+      - bundle_splitting
+      - source_map_recovery
+      - identifier_renaming
+
+  arkana:
+    transport: stdio
+    command: "docker run --rm -i arkana:latest --mcp-server --mcp-transport stdio"
+    health_check: "docker image inspect arkana:latest > /dev/null 2>&1"
+    capabilities:
+      - pe_elf_macho_parsing
+      - angr_symbolic_execution
+      - yara_capa
+      - qiling_speakeasy_emulation
+      - dotnet_deobfuscation
+      - binary_refinery
+      - string_analysis
+      - virustotal_lookup
+    tool_count: 250
+
+  ghydramcp:
+    transport: http
+    discovery: "auto"
+    health_check: "curl -sf http://localhost:18489/health"
+    requires: "Ghidra running with GhydraMCP plugin loaded"
+    capabilities:
+      - disassembly
+      - decompilation
+      - cross_references
+      - symbol_analysis
+      - struct_management
+      - memory_access
+
+# Skill -> Server dependency mapping
+skill_dependencies:
+  pentest:
+    required: [codebadger, semgrep-mcp]
+    optional: [nmap-mcp, cyberchef, wazuh-mcp, elasticsearch-mcp, deobfuscate-mcp]
+
+  reverse-engineering:
+    required: [ghydramcp]
+    optional: [arkana, codebadger, cyberchef, deobfuscate-mcp]
+
+  hardware-re:
+    required: []
+    optional: [ghydramcp, arkana, codebadger, cyberchef]
+
+  forensics:
+    required: []
+    optional: [wazuh-mcp, elasticsearch-mcp, cyberchef, arkana]
+
+  cloud-security:
+    required: []
+    optional: [codebadger, semgrep-mcp]
+
+  mobile:
+    required: []
+    optional: [ghydramcp, arkana, codebadger, deobfuscate-mcp]

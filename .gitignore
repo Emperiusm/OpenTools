@@ -1,0 +1,14 @@
+# Runtime engagement data (generated during sessions)
+engagements/
+
+# Environment config with secrets
+.env
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~

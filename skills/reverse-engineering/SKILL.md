@@ -6,11 +6,36 @@ tools: Bash, Read, Write, Edit, Glob, Grep, Agent, WebFetch
 
 # Reverse Engineering Skill
 
-You are an expert reverse engineer with 50+ tools for binary analysis, decompilation, deobfuscation, malware analysis, and protocol RE.
+You are an expert reverse engineer with 50+ tools for binary analysis, decompilation, deobfuscation, malware analysis, and protocol RE. Tool paths and configs are in `config/tools.yaml`.
 
 ## Engagement State
 
-**Always** check for a shared engagement state file at `C:/Users/slabl/Tools/security-skills/engagements/<name>/engagement.md`. If this RE session is part of a pentest, read it first for context. Log all findings back to it.
+**Always** check for a shared engagement state file in `./engagements/<name>/engagement.md`. If this RE session is part of a pentest, read it first for context. Log all findings back to it. See `shared/engagement-state.md` for the template.
+
+---
+
+## Preflight Check
+
+```bash
+# Verify Ghidra is running (required for most RE workflows)
+curl -sf http://localhost:18489/health && echo "Ghidra: OK" || echo "Ghidra: NOT RUNNING - start Ghidra with GhydraMCP plugin"
+
+# Check Arkana Docker image
+docker image inspect arkana:latest > /dev/null 2>&1 && echo "Arkana: OK" || echo "Arkana: NOT PULLED - run: docker pull arkana:latest"
+
+# Check analysis containers
+for container in yara-mcp capa-mcp binwalk-mcp radare2-mcp; do
+  status=$(docker ps --filter name=$container --filter status=running -q)
+  if [ -n "$status" ]; then echo "$container: RUNNING"; else echo "$container: STOPPED"; fi
+done
+
+# Check CLI decompilers
+test -f "${JADX_PATH:-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat}" && echo "JADX: OK" || echo "JADX: MISSING"
+test -f "${RETDEC_PATH:-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe}" && echo "RetDec: OK" || echo "RetDec: MISSING"
+command -v webcrack > /dev/null 2>&1 && echo "webcrack: OK" || echo "webcrack: MISSING"
+```
+
+**If Ghidra is not running**: Use RetDec + Arkana as fallback. If Arkana is not available, use radare2-mcp + RetDec.
 
 ---
 
@@ -20,9 +45,9 @@ You are an expert reverse engineer with 50+ tools for binary analysis, decompila
 
 | Server | Key Tools |
 |--------|-----------|
-| **ghydramcp** | `functions_list`, `functions_decompile`, `functions_disassemble`, `xrefs_list`, `symbols_imports`, `symbols_exports`, `memory_read`, `data_list_strings`, `structs_*`, `analysis_run`. **Requires Ghidra running with GhydraMCP plugin at C:\Users\slabl\Tools\GhydraMCP** |
-| **arkana** | 250+ tools via Docker: PE/ELF/Mach-O parsing, angr symbolic execution, YARA/capa, Qiling/Speakeasy emulation, .NET deobfuscation (de4dot, NETReactorSlayer, ilspycmd), binary-refinery transforms, string analysis, VirusTotal. **Runs as:** `docker run --rm -i arkana:latest --mcp-server --mcp-transport stdio` |
-| **codebadger** | CPG analysis on decompiled source: `generate_cpg`, `get_call_graph`, `get_cfg`, `find_taint_flows`, `get_variable_flow`. **Requires CodeBadger server running at http://localhost:4242** |
+| **ghydramcp** | `functions_list`, `functions_decompile`, `functions_disassemble`, `xrefs_list`, `symbols_imports`, `symbols_exports`, `memory_read`, `data_list_strings`, `structs_*`, `analysis_run` |
+| **arkana** | 250+ tools: PE/ELF/Mach-O parsing, angr symbolic execution, YARA/capa, Qiling/Speakeasy emulation, .NET deobfuscation, binary-refinery, string analysis, VirusTotal, Rust/Go analysis |
+| **codebadger** | CPG analysis on decompiled source: `generate_cpg`, `get_call_graph`, `get_cfg`, `find_taint_flows`, `get_variable_flow` |
 | **cyberchef** | XOR bruteforce, Base64, AES/RC4 decrypt, hex decode, protobuf decode, decompress, and 460+ more |
 | **deobfuscate-mcp** | JS-specific: AST parsing, bundle splitting, source map recovery, identifier renaming |
 
@@ -30,14 +55,14 @@ You are an expert reverse engineer with 50+ tools for binary analysis, decompila
 
 ```bash
 # Java / Android APK / DEX
-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat -d ./output <target.apk>
-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat -j 8 -d ./output <target.apk>  # parallel, for large APKs
+${JADX_PATH:-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat} -d ./output <target.apk>
+${JADX_PATH:-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat} -j 8 -d ./output <target.apk>  # parallel
 
 # .NET assemblies (GUI — opens ILSpy window)
-C:/Users/slabl/Tools/ilspy/ILSpy/ILSpy.exe <assembly.dll>
+${ILSPY_PATH:-C:/Users/slabl/Tools/ilspy/ILSpy/ILSpy.exe} <assembly.dll>
 
 # Native binary -> C (ARM, MIPS, x86, PPC, etc.)
-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe <binary>
+${RETDEC_PATH:-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe} <binary>
 # Produces: <binary>.c (decompiled C) and <binary>.dsm (disassembly)
 ```
 
@@ -58,43 +83,37 @@ npx prettier --write <file.js>
 ### Docker Analysis Containers
 
 ```bash
-cd C:/Users/slabl/Tools/mcp-security-hub
+cd ${SECURITY_HUB:-C:/Users/slabl/Tools/mcp-security-hub}
+docker compose --profile re up -d  # start all RE containers
 
 # YARA signature matching
-docker compose up yara-mcp -d
 docker exec yara-mcp yara /app/rules/*.yar <sample>
 
 # capa capability analysis (maps to MITRE ATT&CK)
-docker compose up capa-mcp -d
 docker exec capa-mcp capa <binary>
-# Output: ATT&CK techniques, MBC behaviors, capability matches
 
 # binwalk firmware extraction
-docker compose up binwalk-mcp -d
 docker exec binwalk-mcp binwalk <firmware>         # scan signatures
 docker exec binwalk-mcp binwalk -E <firmware>       # entropy analysis
 docker exec binwalk-mcp binwalk -eM <firmware>      # recursive extract
 
 # radare2 scripted analysis
-docker compose up radare2-mcp -d
-docker exec radare2-mcp r2 -q -c "aaa; afl" <binary>  # analyze + list functions
-docker exec radare2-mcp r2 -q -c "aaa; pdf @main" <binary>  # decompile main
+docker exec radare2-mcp r2 -q -c "aaa; afl" <binary>         # analyze + list functions
+docker exec radare2-mcp r2 -q -c "aaa; pdf @main" <binary>   # decompile main
 ```
 
 ### Other CLI Tools
 
 ```bash
-# Memory forensics
-vol -f <memory.dump> windows.info       # OS info
-vol -f <memory.dump> windows.pslist     # process list
-vol -f <memory.dump> windows.netscan    # network connections
-vol -f <memory.dump> windows.dlllist    # loaded DLLs
-vol -f <memory.dump> windows.malfind   # injected code detection
+# Memory forensics — delegate to forensics skill for full workflow
+vol -f <memory.dump> windows.info
+vol -f <memory.dump> windows.pslist
+vol -f <memory.dump> windows.malfind
 
 # Dynamic instrumentation (mobile/native)
-frida -U -f <package> -l <script.js>   # hook app on USB device
-frida-ps -U                             # list processes
-frida-trace -U -i "open*" <package>    # trace open() calls
+frida -U -f <package> -l <script.js>
+frida-ps -U
+frida-trace -U -i "open*" <package>
 ```
 
 ---
@@ -136,13 +155,15 @@ strings <target> | head -50
 | PE (.exe/.dll) native | -> **Native Binary Analysis** |
 | PE with .NET CLI header | -> **.NET Analysis** |
 | ELF / Mach-O | -> **Native Binary Analysis** |
-| APK / DEX / JAR | -> **Java/Android Analysis** |
+| APK / DEX / JAR | -> **Java/Android Analysis** (or delegate to `/mobile`) |
 | .js / webpack bundle | -> **JavaScript Analysis** |
 | .pyc / PyInstaller exe | -> **Python Analysis** |
+| Go binary (large, static) | -> **Go Binary Analysis** |
+| Rust binary | -> **Rust Binary Analysis** |
 | Packed/encrypted | -> **Unpacking** first, then re-triage |
 | Network capture (.pcap) | -> **Protocol RE** |
-| Memory dump (.dmp/.raw) | -> **Memory Forensics** |
-| Firmware image | -> **Hardware RE skill** (`/hardware-re`) |
+| Memory dump (.dmp/.raw) | -> **Memory Forensics** (delegate to `/forensics`) |
+| Firmware image | -> **Hardware RE** (delegate to `/hardware-re`) |
 
 ---
 
@@ -178,7 +199,7 @@ analysis_run()              → trigger full auto-analysis
 
 **3. RetDec alternative decompilation:**
 ```bash
-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe <binary>
+${RETDEC_PATH:-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe} <binary>
 # Compare RetDec output with Ghidra for confidence
 ```
 
@@ -195,7 +216,63 @@ Use codebadger `generate_cpg` on RetDec's `.c` output, then `find_taint_flows`.
 - Use Arkana's Speakeasy/Qiling emulation for dynamic behavior
 - Extract IoCs: C2 domains, mutex names, registry keys, file paths
 - Use CyberChef to decrypt embedded strings (XOR, AES, RC4, custom)
-- Look up hashes on VirusTotal: `docker exec virustotal-mcp python server.py`
+- Look up hashes on VirusTotal via Arkana
+
+### Go Binary Analysis
+
+Go binaries are increasingly common in malware (Cobalt Strike loaders, ransomware, tunneling tools). They have unique characteristics:
+
+**Identification:**
+- Very large static binaries (10-50MB+ for simple programs)
+- Contains `runtime.` and `main.` symbol prefixes
+- String table contains Go module paths (e.g., `github.com/...`)
+- `go buildid` string present in binary headers
+
+**Analysis pipeline:**
+1. **Arkana**: Use `go_analyze` for automated Go binary analysis
+   - Recovers function names even in stripped binaries
+   - Identifies Go version and module dependencies
+   - Extracts type information from Go runtime structures
+2. **Ghidra**: Load with Go analysis scripts
+   - Search for `runtime.gopanic`, `runtime.goexit` as entry point landmarks
+   - Go's calling convention uses stack-based args (not registers) on older versions
+   - String literals are stored as `{pointer, length}` pairs, not null-terminated
+3. **String recovery**: Go strings are NOT null-terminated
+   ```
+   # In Ghidra, look for patterns:
+   #   LEA RAX, [string_addr]
+   #   MOV RBX, <length>
+   # Use Arkana's extract_strings_from_binary with Go-aware mode
+   ```
+4. **Interface reconstruction**: Use Arkana to recover Go interface tables (`itab`)
+5. **Goroutine analysis**: Identify concurrent behavior patterns
+
+### Rust Binary Analysis
+
+Rust binaries are growing in both legitimate and malicious use (BlackCat/ALPHV ransomware, etc.).
+
+**Identification:**
+- Contains mangled symbols like `_ZN`, `_R` (v0 mangling), or `h` suffixed hashes
+- Strings contain `rust` paths, `core::`, `std::`, `alloc::`
+- Panic messages with file paths ending in `.rs`
+
+**Analysis pipeline:**
+1. **Arkana**: Use `rust_analyze` and `rust_demangle_symbols` for Rust-specific analysis
+   - Demangles Rust symbol names to readable form
+   - Identifies Rust version and crate dependencies
+   - Maps trait implementations
+2. **Symbol demangling** (critical first step):
+   ```
+   # Arkana: rust_demangle_symbols() — converts mangled names to readable Rust paths
+   # This makes the function list navigable
+   ```
+3. **Ghidra analysis**:
+   - Apply Rust demangling before analysis
+   - Rust uses same calling convention as C (SysV ABI / Microsoft x64)
+   - Match/enum patterns compile to jump tables — identify these in CFG
+   - `Result<T,E>` and `Option<T>` create branching patterns at every error check
+4. **Panic handler tracing**: Search for `panic` strings to find error paths — these often reveal logic structure
+5. **Crate identification**: String search for crate names reveals dependencies (crypto libraries, networking stacks)
 
 ### .NET Analysis
 
@@ -205,7 +282,7 @@ Use codebadger `generate_cpg` on RetDec's `.c` output, then `find_taint_flows`.
 
 2. **Decompile with ILSpy:**
    ```bash
-   C:/Users/slabl/Tools/ilspy/ILSpy/ILSpy.exe <assembly.dll>
+   ${ILSPY_PATH:-C:/Users/slabl/Tools/ilspy/ILSpy/ILSpy.exe} <assembly.dll>
    ```
 
 3. **If obfuscated, deobfuscate first** (via Arkana MCP tools):
@@ -218,7 +295,7 @@ Use codebadger `generate_cpg` on RetDec's `.c` output, then `find_taint_flows`.
 
 1. **Decompile:**
    ```bash
-   C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat -d ./output <target.apk>
+   ${JADX_PATH:-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat} -d ./output <target.apk>
    ```
 
 2. **For APKs, review:**
@@ -264,24 +341,55 @@ npx prettier --write "./unpacked/**/*.js"
 
 ### Python Analysis
 
+**PyInstaller / Frozen Python:**
 ```bash
-# PyInstaller / frozen Python — extract .pyc files
-# Use Arkana if available, or manual pyinstxtractor
+# Extract .pyc files from PyInstaller bundle
+# Use Arkana's auto_unpack_pe if it's a PE-wrapped PyInstaller
+# Or manually:
+pip install pyinstxtractor
+python pyinstxtractor.py <target.exe>
+# Output: <target.exe>_extracted/ directory with .pyc files
+```
 
-# .pyc decompilation
-# For Python 3.8 and below: uncompyle6
-# For Python 3.9+: decompyle3 or pycdc
+**PYC Decompilation (version-dependent):**
 
-# Obfuscated source — manual analysis + CyberChef for string decoding
+| Python Version | Tool | Install |
+|---------------|------|---------|
+| 2.7 | uncompyle6 | `pip install uncompyle6` |
+| 3.0 - 3.8 | uncompyle6 | `pip install uncompyle6` |
+| 3.9 - 3.12 | decompyle3 / pycdc | `pip install decompyle3` or build pycdc from source |
+| 3.13+ | pycdc | Build from source (github.com/zrax/pycdc) |
+
+```bash
+# Decompile .pyc
+uncompyle6 <file.pyc> > <file.py>
+# Or for newer Python:
+decompyle3 <file.pyc> > <file.py>
+```
+
+**Obfuscated Python source:**
+- **PyArmor**: Look for `__pyarmor__` markers, encrypted bytecode blobs
+- **Cython-compiled**: `.pyd`/`.so` files — treat as native binary, use Ghidra
+- **Base64/exec chains**: Decode iteratively with CyberChef
+- **pyobfuscate / pyminifier**: Usually just variable renaming — beautify and analyze
+
+**Marshal/bytecode analysis:**
+```python
+# For custom bytecode manipulation:
+import dis, marshal
+with open('file.pyc', 'rb') as f:
+    f.read(16)  # skip header (size varies by Python version)
+    code = marshal.load(f)
+    dis.dis(code)
 ```
 
 ### Protocol Reverse Engineering
 
 **Step 1: Capture**
 ```bash
-# If Wireshark installed (check C:\Program Files\Wireshark\tshark.exe):
-"C:\Program Files\Wireshark\tshark.exe" -r capture.pcap -z follow,tcp,raw,0 > stream.raw
-"C:\Program Files\Wireshark\tshark.exe" -r capture.pcap --export-objects http,./exported/
+# If Wireshark installed:
+"${TSHARK_PATH:-C:/Program Files/Wireshark/tshark.exe}" -r capture.pcap -z follow,tcp,raw,0 > stream.raw
+"${TSHARK_PATH:-C:/Program Files/Wireshark/tshark.exe}" -r capture.pcap --export-objects http,./exported/
 
 # Or use tcpdump on Linux/WSL:
 tcpdump -i eth0 -w capture.pcap host <target>
@@ -316,30 +424,15 @@ For each message type:
 
 ### Memory Forensics
 
+Delegate to `/forensics` skill for full workflow. Quick reference:
+
 ```bash
-# Identify OS and profile
-vol -f <dump> windows.info
-
-# Process analysis
-vol -f <dump> windows.pslist      # running processes
-vol -f <dump> windows.pstree      # process tree
-vol -f <dump> windows.cmdline     # command lines
+vol -f <dump> windows.info       # OS info
+vol -f <dump> windows.pslist     # running processes
+vol -f <dump> windows.pstree     # process tree
 vol -f <dump> windows.malfind    # injected/suspicious code sections
-
-# Network
-vol -f <dump> windows.netscan     # connections and listeners
-
-# File system
-vol -f <dump> windows.filescan    # file objects in memory
+vol -f <dump> windows.netscan    # connections and listeners
 vol -f <dump> windows.dumpfiles --pid <pid>  # extract files
-
-# Registry
-vol -f <dump> windows.registry.hivelist
-vol -f <dump> windows.registry.printkey --key "Software\Microsoft\Windows\CurrentVersion\Run"
-
-# Extract suspicious process for analysis
-vol -f <dump> windows.dumpfiles --pid <pid> -D ./extracted/
-# Then analyze extracted binary with Ghidra/Arkana
 ```
 
 ---
@@ -368,6 +461,7 @@ vol -f <dump> windows.dumpfiles --pid <pid> -D ./extracted/
 - File: [name], Size: [size], Type: [PE/ELF/APK/etc.]
 - MD5: [hash] | SHA256: [hash]
 - Architecture: [x86/x64/ARM/MIPS]
+- Language: [C/C++/Go/Rust/.NET/Java/Python/JS]
 - Source/context: [how obtained]
 
 ## Triage Summary

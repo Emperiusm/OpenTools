@@ -1,0 +1,40 @@
+# User Profiles
+# Defines which tools are available in the user's environment.
+# The /setup command generates this file based on detected tools.
+#
+# Run `/setup` to auto-detect and populate, or edit manually.
+
+profile:
+  name: "default"
+  platform: "auto"  # auto | windows | linux | macos
+
+  # Override base paths (leave empty to use defaults from tools.yaml)
+  paths:
+    security_hub: ""      # Docker compose project dir
+    codebadger_dir: ""    # CodeBadger installation
+    ghidra_mcp_dir: ""    # GhydraMCP plugin dir
+    engagement_dir: ""    # Where to store engagement state files
+
+  # Which tool categories are available
+  # Set to false if you don't have these installed
+  capabilities:
+    docker: true            # Docker Desktop / Engine available
+    mcp_servers: true       # MCP servers configured in .claude.json
+    cli_decompilers: true   # jadx, ILSpy, retdec installed
+    js_deobfuscators: true  # webcrack, synchrony on PATH
+    frida: false            # frida-tools installed (requires USB device for mobile)
+    volatility: false       # volatility3 installed
+    sliver: false           # Sliver C2 framework (pentest only)
+    wireshark: false        # tshark/Wireshark installed
+
+  # API keys available (true/false, actual keys stored in .env)
+  api_keys:
+    shodan: false
+    virustotal: false
+    otx: false
+    zoomeye: false
+    networksdb: false
+
+  # Docker compose profiles to start by default
+  # Options: pentest, re, hardware, cloud, all
+  default_profiles: []

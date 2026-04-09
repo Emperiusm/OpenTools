@@ -1,34 +1,107 @@
-# Security Skills Plugin
+# Security Toolkit Plugin
 
-Pentesting and Reverse Engineering skills for Claude Code.
+Comprehensive security skills for Claude Code — penetration testing, reverse engineering, hardware security, digital forensics, cloud security, and mobile application security.
 
 ## Skills
 
-- **pentest** - Guided penetration testing workflows (recon, scanning, exploitation, post-exploitation, reporting)
-- **reverse-engineering** - Binary/source/web reverse engineering and deobfuscation workflows
+| Skill | Description |
+|-------|-------------|
+| **pentest** | Guided penetration testing workflows (recon, scanning, exploitation, post-exploitation, reporting) with OWASP Testing Guide v4.2 coverage |
+| **reverse-engineering** | Binary analysis, decompilation, deobfuscation (PE/ELF/Mach-O/.NET/Java/JS/Python/Go/Rust) |
+| **hardware-re** | Firmware extraction, UART/JTAG/SWD analysis, BLE/WiFi/Zigbee wireless, CAN bus, side-channel awareness |
+| **forensics** | Digital forensics and incident response — memory forensics, log analysis, timeline reconstruction, IOC extraction |
+| **cloud-security** | AWS/Azure/GCP security assessment — IAM audit, storage exposure, network misconfig, compliance checking |
+| **mobile** | Android/iOS application security — static analysis, dynamic instrumentation, API testing, OWASP Mobile Top 10 |
 
 ## Commands
 
-- `/pentest` - Start a pentest engagement
-- `/reverse` - Start a reverse engineering session
+| Command | Description |
+|---------|-------------|
+| `/pentest` | Start a pentest engagement |
+| `/reverse` | Start a reverse engineering session |
+| `/hardware-re` | Start a hardware reverse engineering session |
+| `/vuln-scan` | Quick multi-tool vulnerability scan (source, web, binary, APK, container) |
+| `/setup` | Check tool availability and configure the environment |
+| `/recipe` | Run a saved security workflow recipe |
+
+## Recipes
+
+Pre-built reusable workflows in `recipes.json`:
+
+| Recipe | Description |
+|--------|-------------|
+| `quick-web-audit` | Nuclei + Nikto + ffuf parallel web scan |
+| `apk-analysis` | Full Android APK static analysis pipeline |
+| `binary-triage` | Automated binary triage with Arkana + capa + YARA |
+| `source-code-audit` | CPG taint analysis + Semgrep + secret scanning |
+| `firmware-extract` | Firmware extraction, survey, and vuln scan |
+
+## Architecture
+
+```
+config/              — Tool registry, MCP server config, user profiles
+shared/              — Shared engagement state, report templates
+skills/              — 6 skill modules (pentest, RE, hardware-RE, forensics, cloud, mobile)
+commands/            — 6 slash commands
+recipes.json         — Saved workflow recipes
+.env.example         — API key template
+```
+
+See [CLAUDE.md](CLAUDE.md) for development conventions.
 
 ## Required MCP Servers
 
-- codebadger (Joern static analysis)
-- cyberchef (encoding/decoding/crypto)
-- semgrep-mcp (vulnerability scanning)
-- nmap-mcp (network recon)
-- arkana (binary analysis)
-- ghydramcp (Ghidra RE)
-- deobfuscate-mcp (JS deobfuscation)
-- wazuh-mcp (SIEM/threat hunting)
-- elasticsearch-mcp (log analysis)
+| Server | Purpose | Used By |
+|--------|---------|---------|
+| codebadger | Joern static analysis (CPG, taint flows) | pentest, RE, hardware-RE, cloud |
+| cyberchef | 463+ encoding/decoding/crypto operations | pentest, RE, hardware-RE, forensics |
+| semgrep-mcp | Rule-based vulnerability scanning | pentest |
+| nmap-mcp | Network reconnaissance | pentest |
+| arkana | 250+ binary analysis tools | RE, hardware-RE |
+| ghydramcp | Ghidra bridge for disassembly/decompilation | RE, hardware-RE |
+| deobfuscate-mcp | JS bundle analysis and deobfuscation | pentest, RE |
+| wazuh-mcp | SIEM alert analysis, threat hunting | pentest, forensics |
+| elasticsearch-mcp | Log search, timeline reconstruction | pentest, forensics |
 
-## CLI Tools on PATH
+## Docker Containers (30+)
 
-- webcrack, synchrony (JS deobfuscation)
-- jadx (Java/Android decompilation)
-- ILSpy (. NET decompilation)
-- retdec-decompiler (binary decompilation)
-- sliver-server (C2 framework)
-- pydecipher (Python deobfuscation)
+Managed via docker-compose profiles:
+
+```bash
+# Start containers by profile
+docker compose --profile pentest up -d
+docker compose --profile re up -d
+docker compose --profile hardware up -d
+docker compose --profile cloud up -d
+
+# Or start individually
+docker compose up nuclei-mcp sqlmap-mcp ffuf-mcp -d
+```
+
+See `config/tools.yaml` for the complete container list.
+
+## CLI Tools
+
+| Tool | Purpose |
+|------|---------|
+| webcrack, synchrony | JS deobfuscation |
+| jadx | Java/Android decompilation |
+| ILSpy | .NET decompilation |
+| retdec-decompiler | Multi-arch native binary decompilation |
+| sliver-server | C2 framework (pentest only, requires explicit authorization) |
+| frida | Dynamic instrumentation (mobile/native) |
+| volatility3 | Memory forensics |
+| theHarvester | OSINT email/subdomain harvesting |
+
+## Setup
+
+Run `/setup` to check which tools are available in your environment and get a compatibility report. See `.env.example` for required API keys.
+
+## Configuration
+
+| File | Purpose |
+|------|---------|
+| `config/tools.yaml` | Centralized tool registry — all paths, containers, CLI tools |
+| `config/mcp-servers.yaml` | MCP server connections, health checks, skill dependencies |
+| `config/profiles.yaml` | User environment profile (generated by `/setup`) |
+| `.env.example` | API key template (Shodan, VirusTotal, OTX, etc.) |

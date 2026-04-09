@@ -1,0 +1,205 @@
+{
+  "version": "1.0.0",
+  "lastModified": "2026-04-09T14:47:41.300Z",
+  "recipes": [
+    {
+      "id": "quick-web-audit",
+      "name": "Quick Web Application Audit",
+      "description": "Parallel scan with Nuclei, Nikto, and Semgrep for rapid web app assessment",
+      "requires": ["nuclei-mcp", "nikto-mcp"],
+      "variables": {
+        "target": { "description": "Target URL (e.g., https://example.com)", "required": true }
+      },
+      "steps": [
+        {
+          "name": "Nuclei template scan",
+          "tool": "nuclei-mcp",
+          "command": "docker exec nuclei-mcp nuclei -u {{target}} -as -severity critical,high,medium",
+          "timeout": 300
+        },
+        {
+          "name": "Nikto web server scan",
+          "tool": "nikto-mcp",
+          "command": "docker exec nikto-mcp nikto -h {{target}}",
+          "timeout": 300
+        },
+        {
+          "name": "Directory enumeration",
+          "tool": "ffuf-mcp",
+          "command": "docker exec ffuf-mcp ffuf -u {{target}}/FUZZ -w /app/wordlists/common.txt -mc 200,301,302,403",
+          "timeout": 120
+        }
+      ],
+      "parallel": true,
+      "output": "consolidated-findings-table"
+    },
+    {
+      "id": "apk-analysis",
+      "name": "Android APK Security Analysis",
+      "description": "Full static analysis of an Android APK: decompile, scan for vulns, check secrets, analyze manifest",
+      "requires": ["jadx", "codebadger", "gitleaks-mcp"],
+      "variables": {
+        "target": { "description": "Path to APK file", "required": true },
+        "output_dir": { "description": "Output directory", "default": "./apk_output" }
+      },
+      "steps": [
+        {
+          "name": "Decompile APK with JADX",
+          "tool": "jadx",
+          "command": "${JADX_PATH:-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat} -j 8 -d {{output_dir}} {{target}}",
+          "timeout": 600
+        },
+        {
+          "name": "CPG analysis on decompiled Java",
+          "tool": "codebadger",
+          "command": "generate_cpg on {{output_dir}}/sources/, then run find_taint_flows, find_toctou",
+          "timeout": 300
+        },
+        {
+          "name": "Secret scanning",
+          "tool": "gitleaks-mcp",
+          "command": "docker exec gitleaks-mcp gitleaks detect --source={{output_dir}} -v",
+          "timeout": 120
+        },
+        {
+          "name": "Manifest security review",
+          "tool": "manual",
+          "command": "Analyze {{output_dir}}/resources/AndroidManifest.xml for: debuggable, allowBackup, exported components, cleartext traffic, excessive permissions",
+          "timeout": 60
+        }
+      ],
+      "parallel": false,
+      "output": "consolidated-findings-table"
+    },
+    {
+      "id": "binary-triage",
+      "name": "Binary Security Triage",
+      "description": "Quick automated triage of a suspicious binary using Arkana, capa, YARA, and string analysis",
+      "requires": ["arkana", "capa-mcp", "yara-mcp"],
+      "variables": {
+        "target": { "description": "Path to binary file", "required": true }
+      },
+      "steps": [
+        {
+          "name": "Format detection and metadata",
+          "tool": "arkana",
+          "command": "detect_binary_format, get_pe_metadata or elf_analyze, get_entropy_analysis",
+          "timeout": 120
+        },
+        {
+          "name": "Capability analysis (MITRE ATT&CK)",
+          "tool": "capa-mcp",
+          "command": "docker exec capa-mcp capa {{target}}",
+          "timeout": 180
+        },
+        {
+          "name": "YARA signature matching",
+          "tool": "yara-mcp",
+          "command": "docker exec yara-mcp yara /app/rules/*.yar {{target}}",
+          "timeout": 60
+        },
+        {
+          "name": "String extraction and ranking",
+          "tool": "arkana",
+          "command": "extract_strings_from_binary, get_top_sifted_strings",
+          "timeout": 120
+        },
+        {
+          "name": "Packing detection",
+          "tool": "arkana",
+          "command": "detect_packing, detect_vm_protection, detect_self_modifying_code",
+          "timeout": 60
+        }
+      ],
+      "parallel": true,
+      "output": "triage-report"
+    },
+    {
+      "id": "source-code-audit",
+      "name": "Source Code Security Audit",
+      "description": "Comprehensive static analysis with CPG taint analysis, Semgrep rules, and secret scanning",
+      "requires": ["codebadger", "semgrep", "gitleaks-mcp"],
+      "variables": {
+        "target": { "description": "Path to source code directory", "required": true },
+        "language": { "description": "Primary language (java, python, javascript, go, c, cpp)", "default": "auto" }
+      },
+      "steps": [
+        {
+          "name": "Generate Code Property Graph",
+          "tool": "codebadger",
+          "command": "generate_cpg on {{target}}",
+          "timeout": 600
+        },
+        {
+          "name": "Run all vulnerability detectors",
+          "tool": "codebadger",
+          "command": "find_taint_flows, find_stack_overflow, find_heap_overflow, find_format_string_vulns, find_use_after_free, find_null_pointer_deref, find_integer_overflow, find_toctou, find_uninitialized_reads, find_double_free",
+          "timeout": 300
+        },
+        {
+          "name": "Semgrep rule-based scan",
+          "tool": "semgrep",
+          "command": "${SEMGREP_PATH} --config auto {{target}} --json --severity ERROR --severity WARNING",
+          "timeout": 300
+        },
+        {
+          "name": "Secret scanning with Gitleaks",
+          "tool": "gitleaks-mcp",
+          "command": "docker exec gitleaks-mcp gitleaks detect --source={{target}} -v",
+          "timeout": 120
+        },
+        {
+          "name": "Secret scanning with Trufflehog",
+          "tool": "trufflehog",
+          "command": "docker run --rm -v {{target}}:/target trufflesecurity/trufflehog filesystem /target --json",
+          "timeout": 120
+        }
+      ],
+      "parallel": false,
+      "output": "consolidated-findings-table"
+    },
+    {
+      "id": "firmware-extract",
+      "name": "Firmware Extraction & Survey",
+      "description": "Extract firmware image, identify filesystem, survey for secrets and key binaries",
+      "requires": ["binwalk-mcp"],
+      "variables": {
+        "target": { "description": "Path to firmware image", "required": true }
+      },
+      "steps": [
+        {
+          "name": "Entropy analysis",
+          "tool": "binwalk-mcp",
+          "command": "docker exec -i binwalk-mcp binwalk -E {{target}}",
+          "timeout": 120
+        },
+        {
+          "name": "Signature scan",
+          "tool": "binwalk-mcp",
+          "command": "docker exec -i binwalk-mcp binwalk {{target}}",
+          "timeout": 60
+        },
+        {
+          "name": "Recursive extraction",
+          "tool": "binwalk-mcp",
+          "command": "docker exec -i binwalk-mcp binwalk -eM {{target}}",
+          "timeout": 300
+        },
+        {
+          "name": "Survey extracted filesystem",
+          "tool": "manual",
+          "command": "Search extracted files for: hardcoded credentials (grep -r password), config files (/etc/), web interfaces (/www/), startup scripts (/etc/init.d/), SSH keys, certificates",
+          "timeout": 120
+        },
+        {
+          "name": "Vulnerability scan on extracted filesystem",
+          "tool": "trivy-mcp",
+          "command": "docker exec trivy-mcp trivy fs /path/to/extracted --severity HIGH,CRITICAL",
+          "timeout": 180
+        }
+      ],
+      "parallel": false,
+      "output": "firmware-survey-report"
+    }
+  ]
+}

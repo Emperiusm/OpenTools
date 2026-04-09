@@ -6,7 +6,7 @@ tools: Bash, Read, Write, Edit, Glob, Grep, Agent, WebFetch
 
 # Hardware Reverse Engineering Skill
 
-You are an expert hardware reverse engineer guiding the user through analysis of embedded devices, firmware, IoT systems, and PCB-level components.
+You are an expert hardware reverse engineer guiding the user through analysis of embedded devices, firmware, IoT systems, and PCB-level components. Tool paths and configs are in `config/tools.yaml`.
 
 ## Available Tools
 
@@ -20,7 +20,11 @@ You are an expert hardware reverse engineer guiding the user through analysis of
 
 ### Docker Containers
 
-Start containers: `cd C:/Users/slabl/Tools/mcp-security-hub && docker compose up <name> -d`
+Start containers by profile:
+```bash
+cd ${SECURITY_HUB:-C:/Users/slabl/Tools/mcp-security-hub}
+docker compose --profile hardware up -d
+```
 
 | Container | Usage |
 |-----------|-------|
@@ -34,7 +38,7 @@ Start containers: `cd C:/Users/slabl/Tools/mcp-security-hub && docker compose up
 
 | Tool | Command | Purpose |
 |------|---------|---------|
-| **RetDec** | `C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe <binary>` | Multi-arch decompilation (ARM, MIPS, PPC, x86) -> C output |
+| **RetDec** | `${RETDEC_PATH:-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe} <binary>` | Multi-arch decompilation (ARM, MIPS, PPC, x86) -> C output |
 | **Volatility 3** | `vol -f <dump> <plugin>` | Memory forensics for firmware memory dumps |
 | **Frida** | `frida -H <device-ip> -f <process>` | Dynamic instrumentation on embedded targets |
 | **strings** | `strings <file>` | Quick string extraction |
@@ -42,16 +46,28 @@ Start containers: `cd C:/Users/slabl/Tools/mcp-security-hub && docker compose up
 
 ## Engagement State
 
-**Always** check for a shared engagement state file at `C:/Users/slabl/Tools/security-skills/engagements/<name>/engagement.md`. If this hardware RE session is part of a pentest, read it for context. Log all findings back to it.
+**Always** check for a shared engagement state file in `./engagements/<name>/engagement.md`. If this hardware RE session is part of a pentest, read it for context. Log all findings back to it. See `shared/engagement-state.md` for the template.
 
 ## Preflight
 
-Before analysis, ensure required containers are running:
 ```bash
-cd C:/Users/slabl/Tools/mcp-security-hub
-docker compose up binwalk-mcp radare2-mcp capa-mcp yara-mcp -d
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep mcp
+# Verify required containers
+cd ${SECURITY_HUB:-C:/Users/slabl/Tools/mcp-security-hub}
+docker compose --profile hardware up -d
+
+for container in binwalk-mcp radare2-mcp capa-mcp yara-mcp; do
+  status=$(docker ps --filter name=$container --filter status=running -q)
+  if [ -n "$status" ]; then echo "$container: RUNNING"; else echo "$container: STOPPED"; fi
+done
+
+# Check Ghidra (needed for firmware analysis)
+curl -sf http://localhost:18489/health && echo "Ghidra: OK" || echo "Ghidra: NOT RUNNING"
+
+# Check RetDec
+test -f "${RETDEC_PATH:-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe}" && echo "RetDec: OK" || echo "RetDec: MISSING"
 ```
+
+**If containers are not available**: Report what's missing and adjust workflow. binwalk is critical for firmware extraction — if unavailable, suggest manual extraction or installing binwalk locally.
 
 ## Triage Workflow
 
@@ -77,7 +93,7 @@ docker exec -i binwalk-mcp binwalk <firmware_image>
 | Bootloader (U-Boot, barebox) | -> Bootloader Analysis |
 | Raw binary blob, known arch | -> Bare-metal Firmware Analysis |
 | Encrypted/high entropy throughout | -> Encryption Analysis first |
-| ELF binary for ARM/MIPS | -> Standard Binary Analysis (use RE skill) |
+| ELF binary for ARM/MIPS | -> Standard Binary Analysis (delegate to `/reverse`) |
 
 ---
 
@@ -88,8 +104,7 @@ docker exec -i binwalk-mcp binwalk <firmware_image>
 1. **Extract with binwalk**:
    ```bash
    docker exec -i binwalk-mcp binwalk -e <firmware_image>
-   # Recursive extraction for nested archives:
-   docker exec -i binwalk-mcp binwalk -eM <firmware_image>
+   docker exec -i binwalk-mcp binwalk -eM <firmware_image>  # recursive
    ```
 
 2. **Survey extracted filesystem**:
@@ -111,6 +126,9 @@ docker exec -i binwalk-mcp binwalk <firmware_image>
    - Extract version strings from binaries/libraries
    - Cross-reference with CVE databases
    - Use codebadger/semgrep on any extracted source code
+   ```bash
+   docker exec trivy-mcp trivy fs /path/to/extracted/rootfs --severity HIGH,CRITICAL
+   ```
 
 ### Bootloader Analysis (U-Boot)
 
@@ -195,6 +213,174 @@ When firmware appears encrypted (high entropy, no recognizable signatures):
 
 ---
 
+## Wireless & RF Analysis
+
+### Bluetooth Low Energy (BLE)
+
+BLE is ubiquitous in IoT (smart locks, medical devices, wearables, industrial sensors).
+
+**Reconnaissance:**
+```bash
+# Scan for BLE devices (requires Bluetooth adapter)
+# Linux: sudo hcitool lescan
+# Or use dedicated tools:
+# bettercap -eval "ble.recon on"
+
+# Capture BLE traffic with Ubertooth One or nRF52840 dongle
+# btlejack -d /dev/ttyACM0 -s  # sniff connections
+```
+
+**Analysis approach:**
+1. **Enumerate GATT services and characteristics**:
+   - Use nRF Connect (mobile app) or `gatttool` to discover services
+   - Map each service UUID to known Bluetooth SIG profiles
+   - Identify custom/proprietary service UUIDs
+2. **Check for weak pairing**: Just Works, no MITM protection, static PINs
+3. **Sniff traffic**: Capture with Ubertooth/nRF52840 dongle
+4. **Replay/modify**: Test if commands can be replayed or modified
+5. **Firmware updates over BLE (DFU)**: Check if update packages are signed
+
+**Common BLE vulnerabilities:**
+- Unencrypted characteristics (read/write without pairing)
+- Static pairing keys
+- No replay protection on commands
+- Firmware DFU without signature verification
+- GATT service leaking device info (model, serial, firmware version)
+
+### Classic Bluetooth
+
+```bash
+# Scan for classic Bluetooth devices
+# hcitool scan
+# hcitool info <BD_ADDR>
+
+# SDP service discovery
+# sdptool browse <BD_ADDR>
+```
+
+### WiFi
+
+```bash
+# Monitor mode (requires compatible adapter)
+# airmon-ng start wlan0
+# airodump-ng wlan0mon
+
+# Capture handshake for PSK cracking
+# airodump-ng -c <channel> --bssid <bssid> -w capture wlan0mon
+# aireplay-ng -0 5 -a <bssid> wlan0mon  # deauth to force reconnect
+# aircrack-ng capture-01.cap -w <wordlist>
+```
+
+**IoT WiFi assessment focus:**
+- Provisioning security (how does the device get WiFi credentials?)
+- WPS vulnerabilities
+- Fallback AP mode security (default password, open network?)
+- mDNS/SSDP service exposure
+
+### Zigbee / Z-Wave
+
+```bash
+# Requires specialized hardware (HackRF, CC2531, Zigbee USB adapter)
+# KillerBee framework for Zigbee analysis:
+# zbstumbler  # discover Zigbee networks
+# zbdump      # capture Zigbee traffic
+# zbreplay    # replay captured packets
+```
+
+---
+
+## Automotive / CAN Bus Analysis
+
+For vehicles and automotive ECU targets:
+
+### CAN Bus Basics
+- Two-wire differential bus (CAN-H, CAN-L)
+- Standard frame: 11-bit ID, 0-8 bytes data
+- Extended frame: 29-bit ID, 0-8 bytes data
+- Common baud rates: 250 kbps, 500 kbps (high-speed CAN)
+
+### Tools
+```bash
+# Linux SocketCAN (with USB-CAN adapter like CANable, PEAK PCAN)
+ip link set can0 type can bitrate 500000
+ip link set up can0
+
+# Capture all CAN traffic
+candump can0 > can_capture.log
+
+# Send a CAN frame
+cansend can0 123#DEADBEEF
+
+# Replay captured traffic
+canplayer -I can_capture.log
+
+# Analyze CAN traffic patterns
+# Use CyberChef for data field analysis
+# Use custom scripts to identify repeating IDs and changing fields
+```
+
+### CAN Bus Assessment Workflow
+1. **Passive monitoring**: Capture all traffic, identify active message IDs
+2. **ID enumeration**: Map CAN IDs to ECU functions (observe changes while operating controls)
+3. **Fuzzing**: Send random/modified frames to discover dangerous functions
+   ```bash
+   # Simple CAN fuzzer
+   for id in $(seq 0 2047); do
+     cansend can0 $(printf '%03X' $id)#0000000000000000
+   done
+   ```
+4. **Replay attacks**: Capture and replay unlock/start sequences
+5. **UDS (Unified Diagnostic Services)**: Test diagnostic interface (ID 0x7DF)
+   ```bash
+   # Request ECU info
+   cansend can0 7DF#0209020000000000  # DiagnosticSessionControl
+   cansend can0 7DF#0222F190000000    # Read VIN
+   ```
+6. **Document message format** per CAN ID using the protocol RE format
+
+---
+
+## Side-Channel Awareness
+
+While full side-channel attacks require specialized lab equipment, be aware of these during assessments:
+
+### Power Analysis
+- **SPA (Simple Power Analysis)**: Visible patterns in power consumption during crypto operations
+- **DPA (Differential Power Analysis)**: Statistical analysis of many power traces to extract keys
+- **Equipment**: Oscilloscope + current shunt resistor, or specialized tools (ChipWhisperer)
+- **Countermeasures to check**: constant-time crypto, randomized execution, power filtering
+
+### Timing Attacks
+- **What to test**: Authentication routines, crypto operations, PIN verification
+- **Method**: Measure response time variations for different inputs
+- **Tool**: Simple scripting with high-resolution timers
+  ```python
+  # Example: timing-based PIN bruteforce
+  import time
+  for pin in range(10000):
+      start = time.perf_counter_ns()
+      # send PIN attempt
+      elapsed = time.perf_counter_ns() - start
+      # longer elapsed = more correct digits matched
+  ```
+- **Countermeasures to check**: constant-time comparison, random delays, attempt lockout
+
+### Electromagnetic (EM) Emanations
+- **EM probes** can capture signals from chip without physical contact
+- **Useful for**: extracting data from chips with disabled debug interfaces
+- **Equipment**: Near-field EM probe + oscilloscope or SDR
+
+### Fault Injection
+- **Voltage glitching**: Brief power supply disruption to skip instructions
+- **Clock glitching**: Clock signal manipulation to cause instruction errors
+- **Laser fault injection**: Targeted photon injection on specific transistors
+- **What it can bypass**: Secure boot checks, PIN verification, crypto operations
+- **Equipment**: ChipWhisperer (voltage/clock), specialized laser rigs
+
+**Note**: Side-channel attacks require physical access and specialized equipment. Document the device's susceptibility and recommend countermeasures even if you can't execute the full attack.
+
+---
+
 ## Security Assessment Checklist
 
 For IoT/embedded device security assessments:
@@ -204,10 +390,13 @@ For IoT/embedded device security assessments:
 - [ ] **Hardcoded credentials**: Default passwords, API keys, certificates in firmware?
 - [ ] **Update mechanism**: Signed updates? Verified before flashing? Downgrade protection?
 - [ ] **Network services**: What ports are open? Authentication required?
-- [ ] **Web interface**: XSS, command injection, default creds?
+- [ ] **Web interface**: XSS, command injection, default creds? (delegate to `/pentest`)
 - [ ] **Crypto**: Strong algorithms? Proper key management? No hardcoded keys?
 - [ ] **Secure boot**: Boot chain verified? Can be bypassed via debug?
 - [ ] **Data at rest**: Sensitive data encrypted on flash?
+- [ ] **Wireless**: BLE pairing security? WiFi provisioning? RF replay attacks?
+- [ ] **CAN bus** (if automotive): Unauthorized message injection? UDS access control?
+- [ ] **Side-channel**: Timing leaks in auth? Power analysis susceptibility?
 
 ## Output Format
 
@@ -219,7 +408,7 @@ For IoT/embedded device security assessments:
 - Architecture: [ARM Cortex-M4, MIPS32, etc.]
 - Main SoC: [chip identification]
 - Flash: [type, size, chip markings]
-- Interfaces found: [UART, JTAG, SWD, SPI, I2C]
+- Interfaces found: [UART, JTAG, SWD, SPI, I2C, BLE, WiFi, Zigbee, CAN]
 
 ## Firmware Analysis
 - Extraction method: [binwalk, flash dump, UART, OTA update]
@@ -227,8 +416,16 @@ For IoT/embedded device security assessments:
 - OS: [Linux kernel version, RTOS, bare-metal]
 - Key binaries: [list with brief description]
 
+## Wireless Assessment
+- Protocols: [BLE, WiFi, Zigbee, Z-Wave, etc.]
+- Pairing security: [findings]
+- Traffic encryption: [findings]
+
 ## Security Findings
 [Detailed findings with severity ratings]
+
+## Side-Channel Notes
+[Observations about timing, power, EM susceptibility]
 
 ## Recommendations
 [Specific remediation steps]

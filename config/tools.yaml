@@ -1,0 +1,198 @@
+# Centralized Tool Registry
+# All skills reference tools by name. This file maps names to platform-specific paths.
+# Users should update paths here rather than editing individual skills.
+#
+# Path resolution order:
+#   1. Environment variable (e.g., $SEMGREP_PATH)
+#   2. This config file
+#   3. System PATH lookup
+
+# ─── MCP Servers ────────────────────────────────────────────────────────────────
+
+mcp_servers:
+  codebadger:
+    description: "Joern-based static analysis (CPG, taint flows, vuln detection)"
+    url: "http://localhost:4242/mcp"
+    start: "cd ${CODEBADGER_DIR:-C:/Users/slabl/Documents/Projects/codebadger} && docker compose up -d && .venv/Scripts/python.exe main.py"
+    health_check: "curl -sf http://localhost:4242/health"
+    used_by: [pentest, reverse-engineering, hardware-re, cloud-security]
+
+  semgrep-mcp:
+    description: "Rule-based vulnerability scanning"
+    start: "${SEMGREP_MCP_DIR:-C:/Users/slabl/Tools/semgrep-mcp}/.venv/Scripts/python.exe -m semgrep_mcp.server"
+    used_by: [pentest]
+
+  nmap-mcp:
+    description: "Network reconnaissance via Docker"
+    start: "docker exec -i nmap-mcp python server.py"
+    container: "nmap-mcp"
+    used_by: [pentest]
+
+  cyberchef:
+    description: "463+ encoding/decoding/crypto operations"
+    start: "node ${CYBERCHEF_DIR:-C:/Users/slabl/Tools/CyberChef-MCP}/src/node/mcp-server.mjs"
+    used_by: [pentest, reverse-engineering, hardware-re, forensics]
+
+  wazuh-mcp:
+    description: "SIEM alert analysis, threat hunting"
+    start: "${WAZUH_MCP_DIR:-C:/Users/slabl/Tools/wazuh-mcp}/.venv/Scripts/python.exe -m wazuh_mcp_server"
+    env_required: [WAZUH_HOST, WAZUH_PORT, WAZUH_USER, WAZUH_PASSWORD]
+    used_by: [pentest, forensics]
+
+  elasticsearch-mcp:
+    description: "Log search, timeline reconstruction"
+    start: "${ES_MCP_DIR:-C:/Users/slabl/Tools/elasticsearch-mcp}/.venv/Scripts/python.exe -m src.server"
+    env_required: [ES_HOST]
+    used_by: [pentest, forensics]
+
+  deobfuscate-mcp:
+    description: "JS bundle analysis, AST deobfuscation, source map recovery"
+    start: "node ${DEOBFUSCATE_DIR:-C:/Users/slabl/Tools/deobfuscate-mcp-server}/dist/index.js"
+    used_by: [pentest, reverse-engineering]
+
+  arkana:
+    description: "250+ binary analysis tools (PE/ELF/Mach-O, angr, YARA, capa, emulation)"
+    start: "docker run --rm -i arkana:latest --mcp-server --mcp-transport stdio"
+    image: "arkana:latest"
+    image_size: "5.7GB"
+    used_by: [reverse-engineering, hardware-re]
+
+  ghydramcp:
+    description: "Ghidra bridge for disassembly/decompilation"
+    requires: "Ghidra running with GhydraMCP plugin"
+    plugin_path: "${GHIDRA_MCP_DIR:-C:/Users/slabl/Tools/GhydraMCP}"
+    used_by: [reverse-engineering, hardware-re]
+
+# ─── Docker Containers ──────────────────────────────────────────────────────────
+# Start any: cd ${SECURITY_HUB:-C:/Users/slabl/Tools/mcp-security-hub} && docker compose up <name> -d
+# Start by profile: docker compose --profile pentest up -d
+
+docker_hub: "${SECURITY_HUB:-C:/Users/slabl/Tools/mcp-security-hub}"
+
+containers:
+  # Recon
+  nmap-mcp:         { profile: pentest, description: "Network scanning" }
+  masscan-mcp:      { profile: pentest, description: "Fast mass port scanning" }
+  whatweb-mcp:      { profile: pentest, description: "Web technology fingerprinting" }
+  dnstwist-mcp:     { profile: pentest, description: "Similar domain detection" }
+  waybackurls-mcp:  { profile: pentest, description: "Historical URL discovery" }
+  shodan-mcp:       { profile: pentest, description: "Internet device search", env_required: [SHODAN_API_KEY] }
+  zoomeye-mcp:      { profile: pentest, description: "Internet asset search", env_required: [ZOOMEYE_API_KEY] }
+  maigret-mcp:      { profile: pentest, description: "Username OSINT" }
+  externalattacker-mcp: { profile: pentest, description: "External attack surface" }
+
+  # Vulnerability scanning
+  nuclei-mcp:       { profile: pentest, description: "Template-based vuln scanning" }
+  nikto-mcp:        { profile: pentest, description: "Web server scanning" }
+  ffuf-mcp:         { profile: pentest, description: "Directory/file fuzzing" }
+  sqlmap-mcp:       { profile: pentest, description: "SQL injection" }
+  trivy-mcp:        { profile: [pentest, cloud], description: "Container/filesystem vuln scanning" }
+
+  # Exploitation
+  searchsploit-mcp: { profile: pentest, description: "Exploit database lookup" }
+  hashcat-mcp:      { profile: pentest, description: "Password cracking" }
+
+  # Secrets
+  gitleaks-mcp:     { profile: pentest, description: "Git repo secret scanning" }
+
+  # Threat intel
+  virustotal-mcp:   { profile: [pentest, re], description: "Hash/URL/domain lookup", env_required: [VIRUSTOTAL_API_KEY] }
+  otx-mcp:          { profile: [pentest, re], description: "AlienVault threat intel", env_required: [OTX_API_KEY] }
+  networksdb-mcp:   { profile: pentest, description: "Network/ASN lookup", env_required: [NETWORKSDB_API_KEY] }
+
+  # RE / analysis
+  yara-mcp:         { profile: re, description: "Signature matching" }
+  capa-mcp:         { profile: re, description: "Capability analysis + MITRE ATT&CK" }
+  binwalk-mcp:      { profile: [re, hardware], description: "Firmware extraction + entropy" }
+  radare2-mcp:      { profile: [re, hardware], description: "Multi-arch disassembly" }
+
+  # Cloud
+  prowler-mcp:      { profile: cloud, description: "AWS/Azure/GCP security assessment" }
+
+  # Fuzzing
+  boofuzz-mcp:      { profile: pentest, description: "Protocol fuzzing" }
+  dharma-mcp:       { profile: pentest, description: "Grammar-based fuzzing" }
+
+# ─── CLI Tools ──────────────────────────────────────────────────────────────────
+
+cli_tools:
+  sliver:
+    path: "${SLIVER_PATH:-C:/Users/slabl/Tools/sliver/sliver-server.exe}"
+    description: "C2 framework"
+    used_by: [pentest]
+
+  semgrep:
+    path: "${SEMGREP_PATH:-C:/Users/slabl/Tools/semgrep-mcp/.venv/Scripts/semgrep.exe}"
+    description: "Static analysis CLI"
+    used_by: [pentest]
+
+  jadx:
+    path: "${JADX_PATH:-C:/Users/slabl/Tools/jadx/jadx-1.5.5/bin/jadx.bat}"
+    description: "Java/Android decompiler"
+    used_by: [reverse-engineering, mobile]
+
+  ilspy:
+    path: "${ILSPY_PATH:-C:/Users/slabl/Tools/ilspy/ILSpy/ILSpy.exe}"
+    description: ".NET decompiler (GUI)"
+    used_by: [reverse-engineering]
+
+  retdec:
+    path: "${RETDEC_PATH:-C:/Users/slabl/Tools/retdec/retdec-v5.0/bin/retdec-decompiler.exe}"
+    description: "Multi-arch native decompiler -> C"
+    used_by: [reverse-engineering, hardware-re]
+
+  webcrack:
+    path: "webcrack"
+    install: "npm install -g webcrack"
+    description: "JS deobfuscator (obfuscator.io + webpack)"
+    used_by: [reverse-engineering, pentest]
+
+  synchrony:
+    path: "synchrony"
+    install: "npm install -g synchrony"
+    description: "JS deobfuscator (javascript-obfuscator)"
+    used_by: [reverse-engineering, pentest]
+
+  frida:
+    path: "frida"
+    install: "pip install frida-tools"
+    description: "Dynamic instrumentation"
+    used_by: [reverse-engineering, mobile]
+
+  volatility:
+    path: "vol"
+    install: "pip install volatility3"
+    description: "Memory forensics"
+    used_by: [reverse-engineering, forensics]
+
+  theHarvester:
+    path: "theHarvester"
+    install: "pip install theHarvester"
+    description: "Email/subdomain harvesting"
+    used_by: [pentest]
+
+  joern:
+    path: "${JOERN_PATH:-C:/Users/slabl/Tools/joern/joern-cli/joern}"
+    description: "Joern CLI for CPG analysis"
+    used_by: [reverse-engineering]
+
+  tshark:
+    path: "${TSHARK_PATH:-C:/Program Files/Wireshark/tshark.exe}"
+    description: "Packet capture analysis"
+    used_by: [reverse-engineering, forensics]
+
+# ─── API Keys ──────────────────────────────────────────────────────────────────
+# Stored in: ${SECURITY_HUB:-C:/Users/slabl/Tools/mcp-security-hub}/.env
+# See .env.example for all required keys
+
+api_keys:
+  - SHODAN_API_KEY
+  - OTX_API_KEY
+  - NETWORKSDB_API_KEY
+  - VIRUSTOTAL_API_KEY
+  - ZOOMEYE_API_KEY
+  - WAZUH_HOST
+  - WAZUH_PORT
+  - WAZUH_USER
+  - WAZUH_PASSWORD
+  - ES_HOST
