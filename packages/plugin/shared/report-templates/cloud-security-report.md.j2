@@ -1,0 +1,14 @@
+{% extends '_base-report.md.j2' %}
+{% from '_macros.j2' import category_matrix %}
+{% set report_title = "Cloud Security Assessment" %}
+
+{% block extra_summary %}
+- **Provider**: {{ provider | default("Not specified") }}
+- **Compliance Frameworks**: {{ compliance_frameworks | default("None specified") }}
+{% endblock %}
+
+{% block methodology %}
+{% if cloud_categories is defined %}
+{{ category_matrix(cloud_categories, "Findings by Cloud Category") }}
+{% endif %}
+{% endblock %}

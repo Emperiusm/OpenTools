@@ -1,0 +1,14 @@
+{% extends '_base-report.md.j2' %}
+{% from '_macros.j2' import category_matrix %}
+{% set report_title = "Mobile Application Security Assessment" %}
+
+{% block extra_summary %}
+- **Package**: {{ package_name | default("Not specified") }}
+- **Framework**: {{ framework | default("Not specified") }}
+{% endblock %}
+
+{% block methodology %}
+{% if mobile_top10 is defined %}
+{{ category_matrix(mobile_top10, "OWASP Mobile Top 10 Coverage") }}
+{% endif %}
+{% endblock %}

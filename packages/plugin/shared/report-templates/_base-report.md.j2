@@ -1,0 +1,77 @@
+{% from '_macros.j2' import finding_table, finding_detail, ioc_table, timeline_table, summary_counts %}
+# {{ report_title | default("Security Assessment Report") }}: {{ engagement.name }}
+
+## Engagement Details
+
+- **Client**: {{ client | default("Not specified") }}
+- **Assessor**: {{ assessor | default("Not specified") }}
+- **Classification**: {{ classification | default("INTERNAL") }}
+- **Target**: {{ engagement.target }}
+- **Type**: {{ engagement.type }}
+- **Scope**: {{ engagement.scope or "Not specified" }}
+- **Status**: {{ engagement.status }}
+- **Date**: {{ engagement.created_at | datefmt("%Y-%m-%d") }} to {{ generated_at | datefmt("%Y-%m-%d") }}
+
+## Executive Summary
+
+{{ summary_counts(summary) }}
+
+{% if severity_conflicts %}
+> **Note**: {{ severity_conflicts | length }} finding(s) have severity disagreements between tools. Review detailed findings for per-tool severity ratings.
+{% endif %}
+
+{% block extra_summary %}{% endblock %}
+
+## Findings Overview
+
+{% if findings %}
+{{ finding_table(findings) }}
+{% else %}
+No findings recorded.
+{% endif %}
+
+## Detailed Findings
+
+{% for f in findings %}
+{{ finding_detail(f, loop.index) }}
+
+---
+
+{% endfor %}
+
+{% block methodology %}{% endblock %}
+
+## Timeline
+
+{% if timeline %}
+{{ timeline_table(timeline) }}
+{% else %}
+No timeline events recorded.
+{% endif %}
+
+{% if iocs %}
+## Indicators of Compromise
+
+{% for ioc_type, ioc_list in iocs_by_type.items() %}
+### {{ ioc_type | replace("_", " ") | title }}
+
+{{ ioc_table(ioc_list) }}
+
+{% endfor %}
+{% endif %}
+
+{% block extra_sections %}{% endblock %}
+
+## Tools Used
+
+{% if tools_used %}
+{% for tool in tools_used %}
+- {{ tool }}
+{% endfor %}
+{% else %}
+No tools recorded.
+{% endif %}
+
+---
+
+*Report generated {{ generated_at | datefmt }} by OpenTools*

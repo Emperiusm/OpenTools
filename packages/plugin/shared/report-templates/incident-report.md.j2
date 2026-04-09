@@ -1,0 +1,24 @@
+{% extends '_base-report.md.j2' %}
+{% from '_macros.j2' import category_matrix %}
+{% set report_title = "Incident Report" %}
+
+{% block extra_summary %}
+- **Incident Type**: {{ incident_type | default("Not classified") }}
+- **Detection Method**: {{ detection_method | default("Not specified") }}
+{% endblock %}
+
+{% block methodology %}
+{% if attack_tactics is defined %}
+{{ category_matrix(attack_tactics, "MITRE ATT&CK Mapping") }}
+{% endif %}
+{% endblock %}
+
+{% block extra_sections %}
+## Containment Actions
+
+{{ containment_actions | default("No containment actions documented.") }}
+
+## Lessons Learned
+
+{{ lessons_learned | default("To be completed.") }}
+{% endblock %}

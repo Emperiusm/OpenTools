@@ -160,8 +160,21 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_v2(conn: sqlite3.Connection) -> None:
+    """Add partial indexes optimized for dedup candidate queries."""
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_findings_dedup_file
+        ON findings(engagement_id, file_path, line_start)
+        WHERE deleted_at IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_findings_dedup_network
+        ON findings(engagement_id, cwe)
+        WHERE file_path IS NULL AND deleted_at IS NULL;
+    """)
+
+
 # Registry of all migrations keyed by version number
-MIGRATIONS: dict = {1: _migration_v1}
+MIGRATIONS: dict = {1: _migration_v1, 2: _migration_v2}
 
 # The highest version number we know about
 LATEST_VERSION: int = max(MIGRATIONS.keys())

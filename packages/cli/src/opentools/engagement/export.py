@@ -1,6 +1,7 @@
 """Engagement export and import."""
 
 import json
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -9,10 +10,11 @@ from opentools.engagement.store import EngagementStore
 from opentools.engagement.schema import LATEST_VERSION
 
 
-def export_engagement(store: EngagementStore, engagement_id: str, output_path: Path) -> Path:
-    """Export an engagement to a JSON file.
+def export_engagement(store: EngagementStore, engagement_id: str, output_path: Path, bundle: bool = False) -> Path:
+    """Export an engagement to a JSON file or a zip bundle.
 
     Includes all findings, timeline events, IOCs, artifacts metadata, and audit log.
+    When bundle=True, creates a zip archive containing engagement.json and artifact files.
     """
     engagement = store.get(engagement_id)
     findings = store.get_findings(engagement_id)
@@ -32,20 +34,46 @@ def export_engagement(store: EngagementStore, engagement_id: str, output_path: P
         "audit_log": [a.model_dump(mode="json") for a in audit],
     }
 
+    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(data, f, indent=2)
 
-    return output_path
+    if not bundle:
+        with open(output_path, "w") as f:
+            json.dump(data, f, indent=2)
+        return output_path
+
+    zip_path = output_path.with_suffix(".zip")
+    missing = []
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("engagement.json", json.dumps(data, indent=2))
+
+        for artifact in artifacts:
+            src = Path(artifact.file_path)
+            if src.exists():
+                zf.write(src, f"artifacts/{src.name}")
+            else:
+                missing.append(artifact.file_path)
+
+        if missing:
+            zf.writestr("missing_artifacts.txt", "\n".join(missing))
+
+    return zip_path
 
 
 def import_engagement(store: EngagementStore, import_path: Path) -> str:
-    """Import an engagement from a JSON export file.
+    """Import an engagement from a JSON export file or a zip bundle.
 
     Assigns new IDs to avoid conflicts. Returns the new engagement ID.
     """
-    with open(import_path) as f:
-        data = json.load(f)
+    path = Path(import_path)
+
+    if path.suffix == ".zip":
+        with zipfile.ZipFile(path, "r") as zf:
+            data = json.loads(zf.read("engagement.json"))
+    else:
+        with open(path) as f:
+            data = json.load(f)
 
     # Remap IDs
     id_map: dict[str, str] = {}

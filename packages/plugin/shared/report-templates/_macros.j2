@@ -1,0 +1,84 @@
+{# Shared macros for all report templates #}
+
+{% macro severity_badge(sev) %}**{{ sev | upper }}**{% endmacro %}
+
+{% macro finding_table(findings) %}
+| # | Severity | CWE | Tool | Title | Location |
+|---|----------|-----|------|-------|----------|
+{% for f in findings %}
+| {{ loop.index }} | {{ severity_badge(f.severity) }} | {{ f.cwe | cwe_link }} | {{ f.tool }}{% if f.corroborated_by %} (+{{ f.corroborated_by | length }}){% endif %} | {{ f.title }} | {{ f.file_path or "N/A" }}{% if f.line_start %}:{{ f.line_start }}{% endif %} |
+{% endfor %}
+{% endmacro %}
+
+{% macro finding_detail(f, index) %}
+### [FINDING-{{ "%03d" | format(index) }}] {{ f.title }}
+- **Severity**: {{ severity_badge(f.severity) }}{% if f.cvss %} (CVSS {{ f.cvss }}){% endif %}
+
+- **CWE**: {{ f.cwe | cwe_link }}
+- **Tool**: {{ f.tool }}{% if f.corroborated_by %} (corroborated by {{ f.corroborated_by | join(", ") }}){% endif %}
+
+{% if f.severity_by_tool and f.severity_by_tool | length > 1 %}- **Severity disagreement**: {% for tool, sev in f.severity_by_tool.items() %}{{ tool }}={{ sev }}{% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endif %}
+- **Status**: {{ f.status }}
+{% if f.file_path %}- **Location**: `{{ f.file_path }}{% if f.line_start %}:{{ f.line_start }}{% endif %}{% if f.line_end %}-{{ f.line_end }}{% endif %}`
+{% endif %}
+{% if f.description %}
+- **Description**: {{ f.description }}
+{% endif %}
+{% if f.evidence and f.evidence | length > 500 %}
+<details><summary>Evidence ({{ f.evidence | length }} chars)</summary>
+
+```
+{{ f.evidence }}
+```
+
+</details>
+{% elif f.evidence %}
+- **Evidence**:
+  ```
+  {{ f.evidence }}
+  ```
+{% endif %}
+{% if f.remediation %}
+- **Remediation**: {{ f.remediation }}
+{% endif %}
+{% endmacro %}
+
+{% macro ioc_table(iocs) %}
+| Type | Value | Context | First Seen | Last Seen |
+|------|-------|---------|------------|-----------|
+{% for ioc in iocs %}
+| {{ ioc.ioc_type }} | `{{ ioc.value }}` | {{ ioc.context or "---" }} | {{ ioc.first_seen | datefmt if ioc.first_seen else "---" }} | {{ ioc.last_seen | datefmt if ioc.last_seen else "---" }} |
+{% endfor %}
+{% endmacro %}
+
+{% macro timeline_table(events) %}
+| Timestamp (UTC) | Source | Event | Confidence |
+|-----------------|--------|-------|------------|
+{% for e in events %}
+| {{ e.timestamp | datefmt }} | {{ e.source }} | {{ e.event }} | {{ e.confidence | upper }} |
+{% endfor %}
+{% endmacro %}
+
+{% macro summary_counts(summary) %}
+| Severity | Count |
+|----------|-------|
+| Critical | {{ summary.finding_counts.get("critical", 0) }} |
+| High | {{ summary.finding_counts.get("high", 0) }} |
+| Medium | {{ summary.finding_counts.get("medium", 0) }} |
+| Low | {{ summary.finding_counts.get("low", 0) }} |
+| Info | {{ summary.finding_counts.get("info", 0) }} |
+| **Total** | **{{ summary.finding_counts.values() | sum }}** |
+| False Positives | {{ summary.false_positive_count }} |
+{% endmacro %}
+
+{% macro category_matrix(matrix, title) %}
+## {{ title }}
+
+| Category | Findings | Count |
+|----------|----------|-------|
+{% for category, findings_list in matrix.items() %}
+| {{ category }} | {% for f in findings_list %}{{ f.title }}{% if not loop.last %}, {% endif %}{% endfor %}{% if not findings_list %}---{% endif %} | {{ findings_list | length }} |
+{% endfor %}
+{% endmacro %}

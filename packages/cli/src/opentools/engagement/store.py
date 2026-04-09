@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from opentools.engagement.schema import migrate
+from opentools.findings import check_duplicate, _normalize_path
 from opentools.models import (
     Artifact,
     ArtifactType,
@@ -31,6 +32,13 @@ from opentools.models import (
     Severity,
     TimelineEvent,
 )
+
+
+_SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+
+def _severity_rank(s: str) -> int:
+    return _SEVERITY_ORDER.get(str(s), 0)
 
 
 class EngagementStore:
@@ -209,52 +217,141 @@ class EngagementStore:
     # ------------------------------------------------------------------
 
     def add_finding(self, finding: Finding) -> str:
+        # Normalize path
+        normalized = _normalize_path(finding.file_path)
+        if normalized != finding.file_path:
+            finding = finding.model_copy(update={"file_path": normalized})
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            candidates = self._query_dedup_candidates(finding)
+            match = check_duplicate(finding, candidates)
+
+            if match:
+                result_id = self._merge_finding(match.match, finding, match.confidence)
+            else:
+                self._insert_finding_row(finding)
+                self._insert_timeline_event(
+                    finding.engagement_id, finding.tool,
+                    f"Finding discovered: {finding.title}",
+                    finding.created_at, finding.id,
+                )
+                result_id = finding.id
+
+            self._conn.commit()
+            return result_id
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _query_dedup_candidates(self, finding: Finding) -> list[Finding]:
+        if finding.file_path and finding.line_start is not None:
+            rows = self._conn.execute(
+                "SELECT * FROM findings WHERE engagement_id = ? AND file_path = ? "
+                "AND line_start >= ? AND line_start <= ? AND deleted_at IS NULL",
+                (finding.engagement_id, finding.file_path,
+                 finding.line_start - 5, finding.line_start + 5),
+            ).fetchall()
+        elif finding.file_path:
+            rows = self._conn.execute(
+                "SELECT * FROM findings WHERE engagement_id = ? AND file_path = ? "
+                "AND deleted_at IS NULL",
+                (finding.engagement_id, finding.file_path),
+            ).fetchall()
+        elif finding.cwe:
+            rows = self._conn.execute(
+                "SELECT * FROM findings WHERE engagement_id = ? AND cwe = ? "
+                "AND deleted_at IS NULL",
+                (finding.engagement_id, finding.cwe),
+            ).fetchall()
+        else:
+            return []
+        return [self._row_to_finding(r) for r in rows]
+
+    def _merge_finding(self, existing: Finding, new_finding: Finding, confidence) -> str:
+        corroborated = list(set(existing.corroborated_by + [new_finding.tool]))
+        sbt = {**existing.severity_by_tool, new_finding.tool: str(new_finding.severity)}
+        severity = max(str(existing.severity), str(new_finding.severity), key=_severity_rank)
+        desc = new_finding.description if (
+            new_finding.description and len(new_finding.description) > len(existing.description or "")
+        ) else existing.description
+
         self._conn.execute(
-            """
-            INSERT INTO findings
-                (id, engagement_id, tool, corroborated_by, cwe, severity,
-                 severity_by_tool, status, phase, title, description,
-                 file_path, line_start, line_end, evidence, remediation,
-                 cvss, false_positive, dedup_confidence, created_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                finding.id,
-                finding.engagement_id,
-                finding.tool,
-                json.dumps(finding.corroborated_by),
-                finding.cwe,
-                str(finding.severity),
-                json.dumps(finding.severity_by_tool),
-                str(finding.status),
-                finding.phase,
-                finding.title,
-                finding.description,
-                finding.file_path,
-                finding.line_start,
-                finding.line_end,
-                finding.evidence,
-                finding.remediation,
-                finding.cvss,
-                1 if finding.false_positive else 0,
-                str(finding.dedup_confidence) if finding.dedup_confidence else None,
-                finding.created_at.isoformat(),
-                finding.deleted_at.isoformat() if finding.deleted_at else None,
-            ),
+            "UPDATE findings SET corroborated_by=?, severity_by_tool=?, "
+            "severity=?, description=?, dedup_confidence=? WHERE id=?",
+            (json.dumps(corroborated), json.dumps(sbt), severity,
+             desc, str(confidence), existing.id),
         )
-        # Auto-create timeline event
-        event = TimelineEvent(
-            id=str(uuid.uuid4()),
-            engagement_id=finding.engagement_id,
-            timestamp=finding.created_at,
-            source=finding.tool,
-            event=f"Finding discovered: {finding.title}",
-            confidence=Confidence.HIGH,
-            finding_id=finding.id,
+        self._insert_timeline_event(
+            existing.engagement_id, new_finding.tool,
+            f"Finding corroborated by {new_finding.tool}: {existing.title}",
+            new_finding.created_at, existing.id,
         )
-        self.add_event(event)
-        self._conn.commit()
-        return finding.id
+        return existing.id
+
+    def _insert_finding_row(self, finding: Finding) -> None:
+        self._conn.execute(
+            "INSERT INTO findings (id, engagement_id, tool, corroborated_by, cwe, "
+            "severity, severity_by_tool, status, phase, title, description, "
+            "file_path, line_start, line_end, evidence, remediation, cvss, "
+            "false_positive, dedup_confidence, created_at, deleted_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (finding.id, finding.engagement_id, finding.tool,
+             json.dumps(finding.corroborated_by), finding.cwe,
+             str(finding.severity), json.dumps(finding.severity_by_tool),
+             str(finding.status), finding.phase, finding.title,
+             finding.description, finding.file_path, finding.line_start,
+             finding.line_end, finding.evidence, finding.remediation,
+             finding.cvss, 1 if finding.false_positive else 0,
+             str(finding.dedup_confidence) if finding.dedup_confidence else None,
+             finding.created_at.isoformat(),
+             finding.deleted_at.isoformat() if finding.deleted_at else None),
+        )
+
+    def _insert_timeline_event(self, engagement_id, source, event_text, timestamp, finding_id):
+        self._conn.execute(
+            "INSERT INTO timeline_events (id, engagement_id, timestamp, source, "
+            "event, confidence, finding_id) VALUES (?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), engagement_id, timestamp.isoformat(),
+             source, event_text, "high", finding_id),
+        )
+
+    def add_findings_batch(self, findings: list[Finding]) -> list[str]:
+        results: list[str] = []
+        batch_inserted: list[Finding] = []
+        CHUNK = 100
+
+        for i in range(0, len(findings), CHUNK):
+            chunk = findings[i:i + CHUNK]
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for finding in chunk:
+                    normalized = _normalize_path(finding.file_path)
+                    if normalized != finding.file_path:
+                        finding = finding.model_copy(update={"file_path": normalized})
+
+                    candidates = self._query_dedup_candidates(finding)
+                    batch_candidates = [f for f in batch_inserted if f.engagement_id == finding.engagement_id]
+                    all_candidates = candidates + batch_candidates
+
+                    match = check_duplicate(finding, all_candidates)
+                    if match:
+                        self._merge_finding(match.match, finding, match.confidence)
+                        results.append(match.match.id)
+                    else:
+                        self._insert_finding_row(finding)
+                        self._insert_timeline_event(
+                            finding.engagement_id, finding.tool,
+                            f"Finding discovered: {finding.title}",
+                            finding.created_at, finding.id,
+                        )
+                        batch_inserted.append(finding)
+                        results.append(finding.id)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return results
 
     def get_findings(
         self,
@@ -499,7 +596,7 @@ class EngagementStore:
 
     @staticmethod
     def _row_to_engagement(row: sqlite3.Row) -> Engagement:
-        return Engagement(
+        return Engagement.model_construct(
             id=row["id"],
             name=row["name"],
             target=row["target"],
@@ -513,7 +610,7 @@ class EngagementStore:
 
     @staticmethod
     def _row_to_finding(row: sqlite3.Row) -> Finding:
-        return Finding(
+        return Finding.model_construct(
             id=row["id"],
             engagement_id=row["engagement_id"],
             tool=row["tool"],
@@ -539,7 +636,7 @@ class EngagementStore:
 
     @staticmethod
     def _row_to_timeline_event(row: sqlite3.Row) -> TimelineEvent:
-        return TimelineEvent(
+        return TimelineEvent.model_construct(
             id=row["id"],
             engagement_id=row["engagement_id"],
             timestamp=datetime.fromisoformat(row["timestamp"]),
@@ -552,7 +649,7 @@ class EngagementStore:
 
     @staticmethod
     def _row_to_ioc(row: sqlite3.Row) -> IOC:
-        return IOC(
+        return IOC.model_construct(
             id=row["id"],
             engagement_id=row["engagement_id"],
             ioc_type=IOCType(row["ioc_type"]),
@@ -565,7 +662,7 @@ class EngagementStore:
 
     @staticmethod
     def _row_to_artifact(row: sqlite3.Row) -> Artifact:
-        return Artifact(
+        return Artifact.model_construct(
             id=row["id"],
             engagement_id=row["engagement_id"],
             file_path=row["file_path"],
@@ -577,7 +674,7 @@ class EngagementStore:
 
     @staticmethod
     def _row_to_audit_entry(row: sqlite3.Row) -> AuditEntry:
-        return AuditEntry(
+        return AuditEntry.model_construct(
             id=row["id"],
             timestamp=datetime.fromisoformat(row["timestamp"]),
             command=row["command"],
