@@ -54,7 +54,7 @@ OpenTools/
 │       │       ├── findings.py
 │       │       ├── recipes.py
 │       │       ├── reports.py
-│       │       ├── logging.py
+│       │       ├── audit.py
 │       │       ├── dashboard.py
 │       │       └── parsers/
 │       │           ├── __init__.py
@@ -116,7 +116,7 @@ Resolution order:
 │         export.py ─── JSON archive               │
 │                                                  │
 │  models.py ─── Pydantic (shared by all modules)  │
-│  logging.py ── audit trail                       │
+│  audit.py ──── audit trail                       │
 │  parsers/ ──── tool output → Finding conversion  │
 └──────────────────────────────────────────────────┘
 ```
@@ -270,11 +270,54 @@ class AuditEntry(BaseModel):
     details: Optional[str]
 ```
 
+### 4.7 Supporting Models
+
+```python
+class RecipeVariable(BaseModel):
+    description: str
+    required: bool             # default True
+    default: Optional[str]
+
+class EngagementSummary(BaseModel):
+    engagement: Engagement
+    finding_counts: dict[str, int]      # {"critical": 2, "high": 5, ...}
+    finding_counts_by_status: dict[str, int]  # {"discovered": 3, "confirmed": 4, ...}
+    finding_counts_by_phase: dict[str, int]
+    ioc_counts_by_type: dict[str, int]
+    artifact_count: int
+    timeline_event_count: int
+    false_positive_count: int
+    severity_conflicts: int             # findings where tools disagree
+
+class DeduplicationReport(BaseModel):
+    merged: int                # number of findings merged
+    distinct: int              # number left after dedup
+    merge_details: list[dict]  # [{finding_id, merged_with, confidence}, ...]
+
+class StepResult(BaseModel):
+    step_name: str
+    status: str                # success|error|timeout|skipped|manual
+    exit_code: Optional[int]
+    stdout: Optional[str]
+    stderr: Optional[str]
+    duration_ms: int
+    log_path: Optional[Path]
+
+class RecipeResult(BaseModel):
+    recipe_id: str
+    recipe_name: str
+    status: str                # success|partial|failed
+    steps: list[StepResult]
+    duration_ms: int
+    output_dir: Path
+    findings_added: int
+```
+
 ## 5. Engagement Store (SQLite)
 
 ### 5.1 Database Location
 
-Single database file at `engagements/opentools.db`. All engagements share one DB. Artifact files live in `engagements/<name>/` directories.
+Single database file at `<repo_root>/engagements/opentools.db` (i.e., `OpenTools/engagements/`, at the monorepo root, NOT inside either package). All engagements share one DB. Artifact files live in `engagements/<name>/` directories. This directory is gitignored (runtime data).
 
 ```
 engagements/
@@ -346,6 +389,22 @@ CREATE VIRTUAL TABLE findings_fts USING fts5(
     content='findings', content_rowid='rowid'
 );
 
+-- FTS sync triggers (required: content= tables don't auto-sync)
+CREATE TRIGGER findings_ai AFTER INSERT ON findings BEGIN
+    INSERT INTO findings_fts(rowid, title, description, evidence, remediation)
+    VALUES (new.rowid, new.title, new.description, new.evidence, new.remediation);
+END;
+CREATE TRIGGER findings_ad AFTER DELETE ON findings BEGIN
+    INSERT INTO findings_fts(findings_fts, rowid, title, description, evidence, remediation)
+    VALUES ('delete', old.rowid, old.title, old.description, old.evidence, old.remediation);
+END;
+CREATE TRIGGER findings_au AFTER UPDATE ON findings BEGIN
+    INSERT INTO findings_fts(findings_fts, rowid, title, description, evidence, remediation)
+    VALUES ('delete', old.rowid, old.title, old.description, old.evidence, old.remediation);
+    INSERT INTO findings_fts(rowid, title, description, evidence, remediation)
+    VALUES (new.rowid, new.title, new.description, new.evidence, new.remediation);
+END;
+
 CREATE TABLE timeline_events (
     id TEXT PRIMARY KEY,
     engagement_id TEXT NOT NULL REFERENCES engagements(id),
@@ -407,7 +466,8 @@ Each migration is a Python function in `engagement/schema.py`:
 ```python
 MIGRATIONS = {
     1: create_initial_tables,
-    2: add_some_new_column,
+    # Future migrations added here as the schema evolves, e.g.:
+    # 2: add_finding_tags_column,
 }
 ```
 
@@ -806,13 +866,13 @@ All data from the engagement store is available inside Jinja2 templates:
 
 ### 11.4 Templates
 
-Built-in templates in `packages/plugin/shared/report-templates/`:
-- `pentest-report.md` — with OWASP coverage matrix
-- `incident-report.md` — full IR with ATT&CK mapping
-- `cloud-security-report.md` — with compliance table
-- `mobile-security-report.md` — with OWASP Mobile Top 10
+Built-in templates in `packages/plugin/shared/report-templates/`. Existing `.md` templates will be converted to Jinja2 `.md.j2` format during the monorepo migration:
+- `pentest-report.md.j2` — with OWASP coverage matrix
+- `incident-report.md.j2` — full IR with ATT&CK mapping
+- `cloud-security-report.md.j2` — with compliance table
+- `mobile-security-report.md.j2` — with OWASP Mobile Top 10
 
-Custom templates: drop `.md.j2` files into the same directory.
+Custom templates: drop additional `.md.j2` files into the same directory. The generator discovers all `.md.j2` files automatically.
 
 ## 12. CLI Command Map
 
