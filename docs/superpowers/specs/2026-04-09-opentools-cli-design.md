@@ -125,7 +125,7 @@ Resolution order:
 
 | Dependency | Purpose | Why This Over Alternatives |
 |-----------|---------|---------------------------|
-| Python 3.14 | Runtime | Already installed on target system |
+| Python >=3.12 | Runtime | Already installed on target system |
 | uv | Package management | Fast, already available |
 | typer | CLI framework | Type-hint-driven, Pydantic integration |
 | pydantic | Data models + validation | Config validation, finding normalization, SARIF models |
@@ -134,12 +134,46 @@ Resolution order:
 | ruamel.yaml | YAML loading | Preserves comments on round-trip (users edit config) |
 | sqlite-utils | SQLite access | Dict-friendly API with explicit schema support |
 | jinja2 | Report templates | Industry standard, already used across Python ecosystem |
+| stix2 | STIX 2.1 CTI export | Official OASIS library for structured threat intelligence |
 
 **Not using:**
 - `sarif-om` — stale (last updated 2020). Pydantic SARIF models instead.
 - `httpx` — overkill for 2 HTTP health checks. stdlib `urllib.request` suffices.
 - `pyyaml` — strips comments. `ruamel.yaml` preserves them.
 - `msgspec` — faster serialization but weaker validation than Pydantic.
+
+### 3.1 Dependency Security Analysis
+
+Minimum version pins are set to exclude versions with known exploitable CVEs.
+
+#### Version Constraints
+
+| # | Package | Version Spec | Purpose | Known CVEs |
+|---|---------|-------------|---------|------------|
+| 1 | typer | >=0.15.0 | CLI framework (built on Click) | None known |
+| 2 | pydantic | >=2.0 | Data validation/serialization | CVE-2025-27516 — Pydantic AI sandbox escape via \|attr filter. Affects Pydantic AI, not core Pydantic library. OpenTools uses core Pydantic for data models only. **Not affected.** |
+| 3 | rich | >=13.0 | Terminal formatting/output | None known |
+| 4 | ruamel.yaml | >=0.18 | YAML parsing (safe loader) | None known for >=0.18 |
+| 5 | sqlite-utils | >=3.37 | SQLite database operations | CVE-2025-6965 — underlying SQLite memory corruption when aggregate terms exceed available columns (affects SQLite <3.50.2). sqlite-utils is a Python wrapper; actual SQLite version depends on system Python build. **See vulnerability summary below.** |
+| 6 | jinja2 | >=3.1.6 | Report template rendering | CVE-2024-56326 (fixed 3.1.5), CVE-2025-27516 (fixed 3.1.6). **Mitigated by >=3.1.6 floor.** |
+| 7 | stix2 | >=3.0 | STIX 2.1 CTI export | None known |
+| 8 | textual | >=8.0 | TUI dashboard (Phase 3) | None known |
+
+#### Vulnerability Summary
+
+| Package | CVE | Severity | Fixed In | Exploitable in OpenTools? |
+|---------|-----|----------|----------|--------------------------|
+| jinja2 | CVE-2024-56326 | High (8.6) | 3.1.5 | **No** — mitigated by >=3.1.6 version floor. Without floor: yes, OpenTools generates reports from Jinja2 templates. If an attacker controls template content, sandbox escape leads to arbitrary code execution. |
+| jinja2 | CVE-2025-27516 | High | 3.1.6 | **No** — mitigated by >=3.1.6 version floor. Same attack vector via \|attr filter bypass. |
+| sqlite (via sqlite-utils) | CVE-2025-6965 | High (7.2) | SQLite 3.50.2 | Depends on system SQLite version. If Python was built against SQLite <3.50.2, memory corruption possible via crafted SQL queries. OpenTools uses SQLite for engagement/findings storage — if an attacker can inject crafted data into findings, potentially exploitable. **Mitigate by verifying system SQLite version.** |
+| pydantic | Pydantic AI CVEs | Medium | Various | **No** — OpenTools uses core Pydantic for data models, not Pydantic AI. Not affected. |
+
+#### Mitigation Notes
+
+- **Jinja2**: Version floor set to >=3.1.6 to exclude all known vulnerable versions. Additionally, report templates are shipped with the plugin (not user-supplied), reducing the attack surface for template injection.
+- **SQLite**: Runtime check recommended. `opentools preflight` should verify `sqlite3.sqlite_version >= "3.50.2"` and warn if the system SQLite is outdated.
+- **Pydantic**: No action needed. Core Pydantic is unaffected by Pydantic AI CVEs.
+- **stix2**: Package is in maintenance mode (OASIS standard is stable). No known CVEs. Monitor for advisories.
 
 ## 4. Data Models
 
