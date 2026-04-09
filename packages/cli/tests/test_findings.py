@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opentools.findings import infer_cwe, check_duplicate, export_sarif, export_csv, export_json, CWE_KEYWORDS
+from opentools.findings import infer_cwe, check_duplicate, export_sarif, export_csv, export_json, CWE_KEYWORDS, _normalize_path, _titles_overlap
 from opentools.models import Finding, Severity, Confidence
 
 
@@ -66,13 +66,13 @@ def test_check_duplicate_inferred_cwe():
     now = datetime.now(timezone.utc)
     existing = Finding(
         id="f-1", engagement_id="e-1", tool="semgrep",
-        title="SQL injection found", severity=Severity.HIGH,
+        title="SQL injection found in query", severity=Severity.HIGH,
         cwe=None, file_path="src/api.py", line_start=42,
         created_at=now,
     )
     new = Finding(
         id="f-2", engagement_id="e-1", tool="nuclei",
-        title="sqli error-based", severity=Severity.HIGH,
+        title="SQL injection error-based", severity=Severity.HIGH,
         cwe=None, file_path="src/api.py", line_start=44,
         created_at=now,
     )
@@ -157,3 +157,64 @@ def test_export_json():
     parsed = json.loads(json_str)
     assert len(parsed) == 1
     assert parsed[0]["id"] == "f-1"
+
+
+def test_infer_cwe_word_boundary_no_false_positive():
+    result = infer_cwe("SQL Server connection pool timeout")
+    assert result != "CWE-89"
+
+
+def test_infer_cwe_word_boundary_still_matches():
+    result = infer_cwe("Found sql injection in login endpoint")
+    assert result == "CWE-89"
+
+
+def test_normalize_path_backslash():
+    assert _normalize_path("src\\api\\users.py") == "src/api/users.py"
+
+
+def test_normalize_path_leading_dot_slash():
+    assert _normalize_path("./src/api/users.py") == "src/api/users.py"
+
+
+def test_normalize_path_leading_slash():
+    assert _normalize_path("/src/api/users.py") == "src/api/users.py"
+
+
+def test_normalize_path_none():
+    assert _normalize_path(None) is None
+
+
+def test_normalize_path_clean():
+    assert _normalize_path("src/api/users.py") == "src/api/users.py"
+
+
+def test_titles_overlap_similar():
+    assert _titles_overlap("SQL injection in login form", "SQL injection in user login") is True
+
+
+def test_titles_overlap_different():
+    assert _titles_overlap("Buffer overflow in parser", "Missing CSRF token on form") is False
+
+
+def test_titles_overlap_empty():
+    assert _titles_overlap("", "something") is True
+
+
+def test_check_duplicate_uses_normalized_paths():
+    now = datetime.now(timezone.utc)
+    existing = Finding(
+        id="f-1", engagement_id="e-1", tool="semgrep",
+        title="SQL Injection", severity=Severity.HIGH,
+        cwe="CWE-89", file_path="src/api/users.py", line_start=42,
+        created_at=now,
+    )
+    new = Finding(
+        id="f-2", engagement_id="e-1", tool="codebadger",
+        title="Taint flow to SQL sink", severity=Severity.CRITICAL,
+        cwe="CWE-89", file_path="./src\\api\\users.py", line_start=43,
+        created_at=now,
+    )
+    result = check_duplicate(new, [existing])
+    assert result is not None
+    assert result.match.id == "f-1"

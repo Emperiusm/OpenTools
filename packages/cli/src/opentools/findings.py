@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -35,20 +36,39 @@ CWE_KEYWORDS: dict[str, list[str]] = {
     "CWE-532": ["log injection", "sensitive data in log", "password in log"],
 }
 
+_CWE_PATTERNS: dict[str, list[re.Pattern]] = {
+    cwe: [re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE) for kw in keywords]
+    for cwe, keywords in CWE_KEYWORDS.items()
+}
+
 
 def infer_cwe(text: str) -> Optional[str]:
-    """Infer CWE from finding title/description text.
-    Returns the CWE with the most keyword matches, or None.
-    """
-    text_lower = text.lower()
+    """Infer CWE from finding title/description using word-boundary matching."""
     best_cwe = None
     best_count = 0
-    for cwe, keywords in CWE_KEYWORDS.items():
-        count = sum(1 for kw in keywords if kw in text_lower)
+    for cwe, patterns in _CWE_PATTERNS.items():
+        count = sum(1 for p in patterns if p.search(text))
         if count > best_count:
             best_count = count
             best_cwe = cwe
     return best_cwe
+
+
+def _normalize_path(p: str | None) -> str | None:
+    """Normalize file path for cross-tool comparison."""
+    if p is None:
+        return None
+    return p.replace("\\", "/").removeprefix("./").removeprefix("/")
+
+
+def _titles_overlap(a: str, b: str, threshold: float = 0.3) -> bool:
+    """Check if two finding titles share enough words to be the same finding."""
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return True
+    overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
+    return overlap >= threshold
 
 
 @dataclass
@@ -79,6 +99,12 @@ def check_duplicate(
 
         if new_cwe and existing_cwe and new_cwe == existing_cwe:
             confidence = _compute_confidence(new_finding, existing, new_cwe == new_finding.cwe)
+            if confidence == Confidence.LOW:
+                if not _titles_overlap(
+                    f"{new_finding.title} {new_finding.description or ''}",
+                    f"{existing.title} {existing.description or ''}",
+                ):
+                    continue
             return DuplicateMatch(match=existing, confidence=confidence)
 
     return None
@@ -86,14 +112,16 @@ def check_duplicate(
 
 def _locations_overlap(a: Finding, b: Finding, window: int) -> bool:
     """Check if two findings are at overlapping locations."""
-    if a.file_path and b.file_path:
-        if a.file_path != b.file_path:
+    path_a = _normalize_path(a.file_path)
+    path_b = _normalize_path(b.file_path)
+    if path_a and path_b:
+        if path_a != path_b:
             return False
         if a.line_start is not None and b.line_start is not None:
             return abs(a.line_start - b.line_start) <= window
-        return True  # same file, no line info
-    if a.file_path is None and b.file_path is None:
-        return True  # network findings, match on CWE only
+        return True
+    if path_a is None and path_b is None:
+        return True
     return False
 
 
