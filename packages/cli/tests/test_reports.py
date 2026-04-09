@@ -84,3 +84,66 @@ def test_list_templates_empty_dir(tmp_path):
     store = EngagementStore(db_path=tmp_path / "test.db")
     gen = ReportGenerator(template_dir, store)
     assert gen.list_templates() == []
+
+
+def test_custom_jinja2_filters(tmp_path):
+    from opentools.engagement.store import EngagementStore
+    store = EngagementStore(db_path=tmp_path / "test.db")
+    now = datetime.now(timezone.utc)
+    eng = Engagement(id="e-1", name="test", target="10.0.0.1",
+                     type=EngagementType.PENTEST, status=EngagementStatus.ACTIVE,
+                     created_at=now, updated_at=now)
+    store.create(eng)
+
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    (template_dir / "filters.md.j2").write_text(
+        "Date: {{ engagement.created_at | datefmt }}\n"
+        "CWE: {{ 'CWE-89' | cwe_link }}\n"
+        "Sev: {{ 'critical' | severity_icon }}\n"
+    )
+    gen = ReportGenerator(template_dir, store)
+    result = gen.generate("e-1", "filters")
+    assert "UTC" in result
+    assert "cwe.mitre.org" in result
+    assert "!!!" in result
+
+
+def test_extra_context(tmp_path):
+    from opentools.engagement.store import EngagementStore
+    store = EngagementStore(db_path=tmp_path / "test.db")
+    now = datetime.now(timezone.utc)
+    eng = Engagement(id="e-1", name="test", target="10.0.0.1",
+                     type=EngagementType.PENTEST, status=EngagementStatus.ACTIVE,
+                     created_at=now, updated_at=now)
+    store.create(eng)
+
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    (template_dir / "extra.md.j2").write_text(
+        "Client: {{ client | default('N/A') }}\nAssessor: {{ assessor | default('N/A') }}\n"
+    )
+    gen = ReportGenerator(template_dir, store)
+    result = gen.generate("e-1", "extra", extra_context={"client": "Acme Corp", "assessor": "Jane"})
+    assert "Acme Corp" in result
+    assert "Jane" in result
+
+    result2 = gen.generate("e-1", "extra")
+    assert "N/A" in result2
+
+
+def test_context_builder_pentest(tmp_path):
+    from opentools.reports import _build_pentest_context, OWASP_CWE_MAP
+    from opentools.engagement.store import EngagementStore
+    store = EngagementStore(db_path=tmp_path / "test.db")
+    now = datetime.now(timezone.utc)
+    eng = Engagement(id="e-1", name="test", target="10.0.0.1",
+                     type=EngagementType.PENTEST, status=EngagementStatus.ACTIVE,
+                     created_at=now, updated_at=now)
+    store.create(eng)
+    store.add_finding(Finding(id="f-1", engagement_id="e-1", tool="test",
+                              title="SQLi", severity=Severity.HIGH, cwe="CWE-89", created_at=now))
+    findings = store.get_findings("e-1")
+    ctx = _build_pentest_context(findings)
+    assert "owasp_matrix" in ctx
+    assert len(ctx["owasp_matrix"]["Input Validation"]) == 1
