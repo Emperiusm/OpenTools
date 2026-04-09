@@ -97,6 +97,7 @@ For each file group:
 COMMIT
 
 Chunk at 100 findings per transaction to prevent long write locks.
+Path normalization applied to every finding in the batch (same as single insert).
 ```
 
 **Severity ranking for "keep max":**
@@ -290,10 +291,18 @@ ATTACK_TACTIC_CWE_MAP = {
 }
 
 _TEMPLATE_CONTEXT_BUILDERS = {
-    "pentest-report": _build_pentest_context,      # returns {"owasp_matrix": {...}}
-    "incident-report": _build_incident_context,    # returns {"attack_tactics": {...}}
-    "cloud-security-report": _build_cloud_context, # returns {"cloud_categories": {...}}
-    "mobile-security-report": _build_mobile_context, # returns {"mobile_top10": {...}}
+    "pentest-report": _build_pentest_context,
+    # Returns: {"owasp_matrix": {"Authentication": [Finding, ...], ...}}
+
+    "incident-report": _build_incident_context,
+    # Returns: {"attack_tactics": {"Initial Access": [Finding, ...], ...}}
+    # Maps findings to MITRE ATT&CK tactics via ATTACK_TACTIC_CWE_MAP
+
+    "cloud-security-report": _build_cloud_context,
+    # Returns: {"cloud_categories": {"IAM": [Finding, ...], ...}}
+
+    "mobile-security-report": _build_mobile_context,
+    # Returns: {"mobile_top10": {"M1: Improper Credential Usage": [Finding, ...], ...}}
 }
 ```
 
@@ -305,8 +314,8 @@ Registered on the `Environment` once:
 
 ```python
 env.filters["datefmt"] = lambda dt, fmt="%Y-%m-%d %H:%M UTC": dt.strftime(fmt) if dt else "—"
-env.filters["cwe_link"] = lambda cwe: f"[{cwe}](https://cwe.mitre.org/data/definitions/{cwe.split('-')[1]}.html)" if cwe else "—"
-env.filters["severity_icon"] = lambda s: {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵", "info": "⚪"}.get(str(s), "")
+env.filters["cwe_link"] = lambda cwe: f"[{cwe}](https://cwe.mitre.org/data/definitions/{cwe.split('-')[1]}.html)" if cwe and "-" in cwe else (cwe or "—")
+env.filters["severity_icon"] = lambda s: {"critical": "!!!", "high": "!!", "medium": "!", "low": "~", "info": "."}[str(s)]
 ```
 
 ### 3.6 Extra Context Parameter
@@ -447,13 +456,15 @@ Hash type detection from format:
 
 | Pattern | Hash Type |
 |---------|-----------|
+| 3+ fields separated by `:` | Machine-readable (first field = type) — parse first |
 | 32 hex chars | MD5 |
 | 40 hex chars | SHA-1 |
 | 64 hex chars | SHA-256 |
 | Starts with `$2` | bcrypt |
 | Starts with `$6$` | SHA-512 crypt |
-| Contains `:` before hash | Machine-readable format (type prefix) |
 | Other | Unknown |
+
+Detection order: check for machine-readable format (3+ colon-separated fields) first, then fall back to hash-length heuristic on the potfile format.
 
 ## 6. Files Changed Summary
 
@@ -475,6 +486,7 @@ Hash type detection from format:
 | `parsers/nmap.py` | Create | Nmap XML parser with NSE script handling |
 | `parsers/nikto.py` | Create | Nikto JSON parser with severity heuristic |
 | `parsers/hashcat.py` | Create | Hashcat potfile parser with hash type detection |
+| `tests/test_schema.py` | Modify | Migration v2 test (indexes exist, v1→v2 upgrade, idempotent) |
 | `tests/test_engagement.py` | Modify | Dedup-on-insert tests, batch tests, export bundle tests |
 | `tests/test_findings.py` | Modify | Word-boundary inference tests, title overlap tests, path normalization tests |
 | `tests/test_reports.py` | Modify | Template inheritance tests, context builder tests, extra_context tests |
