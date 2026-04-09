@@ -108,3 +108,46 @@ def test_search_findings_fts(store, sample_engagement):
     results = store.search_findings("buffer overflow")
     assert len(results) == 1
     assert results[0].id == "f-1"
+
+
+from opentools.engagement.export import export_engagement, import_engagement
+import json
+
+
+def test_export_creates_json_file(store, sample_engagement, tmp_path):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    store.add_finding(Finding(
+        id="f-1", engagement_id=sample_engagement.id,
+        tool="test", title="Test Finding", severity=Severity.HIGH, created_at=now,
+    ))
+    output = tmp_path / "export.json"
+    export_engagement(store, sample_engagement.id, output)
+    assert output.exists()
+    data = json.loads(output.read_text())
+    assert data["engagement"]["name"] == "test-pentest"
+    assert len(data["findings"]) == 1
+    assert "schema_version" in data
+
+
+def test_import_creates_new_engagement(store, sample_engagement, tmp_path):
+    # Export first
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    store.add_finding(Finding(
+        id="f-1", engagement_id=sample_engagement.id,
+        tool="test", title="Test Finding", severity=Severity.HIGH, created_at=now,
+    ))
+    output = tmp_path / "export.json"
+    export_engagement(store, sample_engagement.id, output)
+
+    # Import into same store (new IDs)
+    new_id = import_engagement(store, output)
+    assert new_id != sample_engagement.id
+    engagements = store.list_all()
+    assert len(engagements) == 2
+
+    # Verify imported engagement has findings
+    imported_findings = store.get_findings(new_id)
+    assert len(imported_findings) == 1
+    assert imported_findings[0].title == "Test Finding"
