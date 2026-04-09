@@ -432,6 +432,55 @@ def findings_export(
 
 
 # ---------------------------------------------------------------------------
+# IOCs commands
+# ---------------------------------------------------------------------------
+
+
+@iocs_app.command("export")
+def iocs_export(
+    engagement: str = typer.Argument(help="Engagement name or ID"),
+    format: str = typer.Option("csv", help="Export format: csv|json|stix"),
+    output: str = typer.Option(None, help="Output file path"),
+    tlp: str = typer.Option("amber", help="TLP marking for STIX export (white|green|amber|red)"),
+    valid_days: int = typer.Option(None, help="Indicator validity period in days (STIX only)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    """Export IOCs from an engagement."""
+    try:
+        store = _get_store()
+        iocs = store.get_iocs(engagement)
+
+        if format == "stix":
+            from opentools.stix_export import export_stix
+            findings = store.get_findings(engagement)
+            eng = store.get(engagement)
+            result = export_stix(iocs, eng, findings=findings, tlp=tlp, valid_days=valid_days)
+        elif format == "json":
+            import json as _json
+            data = [ioc.model_dump(mode="json") for ioc in iocs]
+            result = _json.dumps(data, indent=2)
+        else:  # csv
+            import csv as _csv
+            import io
+            buf = io.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow(["id", "type", "value", "context", "first_seen", "last_seen"])
+            for ioc in iocs:
+                writer.writerow([ioc.id, ioc.ioc_type, ioc.value,
+                               ioc.context or "", ioc.first_seen or "", ioc.last_seen or ""])
+            result = buf.getvalue()
+
+        if output:
+            from pathlib import Path
+            Path(output).write_text(result, encoding="utf-8")
+            console.print(f"Exported to {output}")
+        else:
+            console.print(result)
+    except Exception as e:
+        _error(str(e))
+
+
+# ---------------------------------------------------------------------------
 # Containers commands
 # ---------------------------------------------------------------------------
 
