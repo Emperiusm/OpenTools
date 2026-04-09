@@ -221,3 +221,71 @@ def test_add_findings_batch(store, sample_engagement):
     assert ids[2] != ids[0]
     all_findings = store.get_findings(sample_engagement.id)
     assert len(all_findings) == 2
+
+
+import zipfile as _zipfile
+
+
+def test_export_bundle_creates_zip(store, sample_engagement, tmp_path):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    store.add_finding(Finding(
+        id="f-1", engagement_id=sample_engagement.id,
+        tool="test", title="Test", severity=Severity.HIGH, created_at=now,
+    ))
+    artifact_file = tmp_path / "screenshot.png"
+    artifact_file.write_bytes(b"fake image data")
+    from opentools.models import Artifact, ArtifactType
+    store.add_artifact(Artifact(
+        id="a-1", engagement_id=sample_engagement.id,
+        file_path=str(artifact_file), artifact_type=ArtifactType.SCREENSHOT,
+        created_at=now,
+    ))
+
+    output = tmp_path / "export.json"
+    from opentools.engagement.export import export_engagement
+    result = export_engagement(store, sample_engagement.id, output, bundle=True)
+    assert result.suffix == ".zip"
+    assert result.exists()
+
+    with _zipfile.ZipFile(result) as zf:
+        names = zf.namelist()
+        assert "engagement.json" in names
+        assert any("screenshot.png" in n for n in names)
+
+
+def test_export_bundle_missing_artifact(store, sample_engagement, tmp_path):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    from opentools.models import Artifact, ArtifactType
+    store.add_artifact(Artifact(
+        id="a-1", engagement_id=sample_engagement.id,
+        file_path="/nonexistent/file.bin", artifact_type=ArtifactType.BINARY,
+        created_at=now,
+    ))
+
+    output = tmp_path / "export.json"
+    from opentools.engagement.export import export_engagement
+    result = export_engagement(store, sample_engagement.id, output, bundle=True)
+
+    with _zipfile.ZipFile(result) as zf:
+        assert "missing_artifacts.txt" in zf.namelist()
+        missing = zf.read("missing_artifacts.txt").decode()
+        assert "/nonexistent/file.bin" in missing
+
+
+def test_import_from_zip(store, sample_engagement, tmp_path):
+    store.create(sample_engagement)
+    now = datetime.now(timezone.utc)
+    store.add_finding(Finding(
+        id="f-1", engagement_id=sample_engagement.id,
+        tool="test", title="Test", severity=Severity.HIGH, created_at=now,
+    ))
+
+    output = tmp_path / "export.json"
+    from opentools.engagement.export import export_engagement, import_engagement
+    zip_path = export_engagement(store, sample_engagement.id, output, bundle=True)
+
+    new_id = import_engagement(store, zip_path)
+    assert new_id != sample_engagement.id
+    assert len(store.list_all()) == 2
