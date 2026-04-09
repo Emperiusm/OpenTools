@@ -121,18 +121,29 @@ If the IOC has a `source_finding_id`, look up the finding's `dedup_confidence`:
 | low | 35 |
 | No linked finding | 50 |
 
-Since the export function receives `list[IOC]` (not findings), confidence mapping requires passing findings as an optional parameter or pre-computing a lookup dict. Design choice: pass an optional `findings: list[Finding] = None` parameter. If provided, build a `{finding_id: confidence}` lookup.
-
-Updated signature:
+Since the export function receives `list[IOC]` (not findings), confidence mapping requires the optional `findings` parameter (already in the signature in 3.1). If provided, build a `{finding_id: dedup_confidence}` lookup dict.
 
 ```python
-def export_stix(
-    iocs: list[IOC],
-    engagement: Engagement,
-    findings: list[Finding] | None = None,
-    tlp: str = "amber",
-    valid_days: int | None = None,
-) -> str:
+_CONFIDENCE_MAP = {"high": 85, "medium": 60, "low": 35}
+
+def _map_confidence(ioc: IOC, confidence_lookup: dict[str, str]) -> int:
+    """Map IOC to STIX confidence (0-100) via linked finding."""
+    if ioc.source_finding_id and ioc.source_finding_id in confidence_lookup:
+        return _CONFIDENCE_MAP.get(confidence_lookup[ioc.source_finding_id], 50)
+    return 50
+```
+
+```python
+def _build_labels(ioc: IOC) -> list[str]:
+    """Generate STIX labels from IOC type and context."""
+    labels = list(_TYPE_LABELS.get(str(ioc.ioc_type), []))
+    if ioc.context:
+        ctx = ioc.context.lower()
+        if any(kw in ctx for kw in _C2_KEYWORDS):
+            labels.append("c2")
+        if any(kw in ctx for kw in _EXFIL_KEYWORDS):
+            labels.append("exfiltration")
+    return labels
 ```
 
 ### 3.6 Labels
@@ -175,7 +186,7 @@ Default: `TLP:AMBER`. All objects in the bundle reference the selected TLP marki
 
 #### Malware SDO
 
-Created when a hash IOC's `context` contains a recognized malware family name.
+Created when a **hash IOC** (`ioc_type in ("hash_md5", "hash_sha256")`) has a `context` containing a recognized malware family name. Non-hash IOCs skip this check.
 
 ```python
 _MALWARE_FAMILIES = [
@@ -184,8 +195,6 @@ _MALWARE_FAMILIES = [
     "mimikatz", "sliver", "metasploit", "meterpreter", "havoc", "bruteratel",
     "icedid", "bumblebee", "raccoon", "redline", "vidar", "asyncrat",
 ]
-
-import re
 
 _MALWARE_PATTERNS = {
     family: re.compile(rf"\b{re.escape(family)}\b", re.IGNORECASE)
@@ -225,7 +234,7 @@ relationship = stix2.Relationship(
 
 #### Infrastructure SDO
 
-Created when IP/domain/URL IOC's `context` contains C2 or exfiltration keywords.
+Created when a **network IOC** (`ioc_type in ("ip", "domain", "url")`) has a `context` containing C2 or exfiltration keywords. Non-network IOCs skip this check.
 
 ```python
 _C2_KEYWORDS = ["c2", "c&c", "command and control", "command-and-control", "callback", "beacon"]
