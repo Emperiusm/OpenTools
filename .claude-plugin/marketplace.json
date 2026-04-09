@@ -1,0 +1,15 @@
+{
+  "name": "security-toolkit",
+  "description": "Penetration testing, reverse engineering, and hardware security skills for Claude Code",
+  "owner": {
+    "name": "slabl"
+  },
+  "plugins": [
+    {
+      "name": "security-toolkit",
+      "source": "./",
+      "description": "50+ security tools: /pentest, /reverse, /hardware-re, /vuln-scan",
+      "version": "0.1.0"
+    }
+  ]
+}

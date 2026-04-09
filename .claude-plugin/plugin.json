@@ -1,0 +1,13 @@
+{
+  "name": "security-toolkit",
+  "description": "Penetration testing, reverse engineering, and hardware security skills for Claude Code. Orchestrates 50+ security tools via MCP servers, Docker containers, and CLI tools.",
+  "version": "0.1.0",
+  "author": {
+    "name": "slabl"
+  },
+  "skills": [
+    "./skills/pentest",
+    "./skills/reverse-engineering",
+    "./skills/hardware-re"
+  ]
+}
