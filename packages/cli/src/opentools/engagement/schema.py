@@ -27,8 +27,8 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS engagements (
             id          TEXT PRIMARY KEY,
             name        TEXT NOT NULL,
-            target      TEXT,
-            type        TEXT,
+            target      TEXT NOT NULL,
+            type        TEXT NOT NULL,
             scope       TEXT,
             status      TEXT NOT NULL DEFAULT 'active',
             skills_used TEXT,  -- JSON array
@@ -40,14 +40,14 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS findings (
             id                 TEXT PRIMARY KEY,
             engagement_id      TEXT NOT NULL REFERENCES engagements(id),
-            tool               TEXT,
+            tool               TEXT NOT NULL,
             corroborated_by    TEXT,   -- JSON array
             cwe                TEXT,
-            severity           TEXT,
+            severity           TEXT NOT NULL,
             severity_by_tool   TEXT,   -- JSON object
             status             TEXT NOT NULL DEFAULT 'discovered',
             phase              TEXT,
-            title              TEXT,
+            title              TEXT NOT NULL,
             description        TEXT,
             file_path          TEXT,
             line_start         INTEGER,

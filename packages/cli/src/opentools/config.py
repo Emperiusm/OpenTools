@@ -132,11 +132,12 @@ class ConfigLoader:
             )
 
         # ── docker_hub path ───────────────────────────────────────────────
-        docker_hub_path: str | None = tools_data.get("docker_hub")
+        docker_hub_raw: str | None = tools_data.get("docker_hub")
+        docker_hub_path = Path(docker_hub_raw) if docker_hub_raw else None
 
-        # ── api_keys list → dict skeleton ────────────────────────────────
-        api_keys: dict[str, str] = {
-            key: os.environ.get(key, "")
+        # ── api_keys list → dict[str, bool] (is the key set?) ───────────
+        api_keys: dict[str, bool] = {
+            key: bool(os.environ.get(key))
             for key in (tools_data.get("api_keys") or [])
             if isinstance(key, str)
         }
@@ -146,7 +147,7 @@ class ConfigLoader:
             containers=containers,
             cli_tools=cli_tools,
             docker_hub_path=docker_hub_path,
-            plugin_dir=str(self._plugin_dir),
+            plugin_dir=self._plugin_dir,
             api_keys=api_keys,
         )
 

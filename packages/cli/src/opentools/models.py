@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -212,7 +213,7 @@ class RecipeStep(BaseModel):
     timeout: int = 300
     step_type: StepType = StepType.SHELL
     on_failure: FailureAction = FailureAction.CONTINUE
-    depends_on: Optional[str] = None
+    depends_on: Optional[list[str]] = None
 
 
 class Recipe(BaseModel):
@@ -223,7 +224,7 @@ class Recipe(BaseModel):
     variables: dict[str, RecipeVariable] = Field(default_factory=dict)
     steps: list[RecipeStep] = Field(default_factory=list)
     parallel: bool = False
-    output: dict[str, Any] = Field(default_factory=dict)
+    output: str = "consolidated-findings-table"
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +307,7 @@ class ContainerStatus(BaseModel):
     name: str
     state: str
     health: Optional[str] = None
-    profile: str
+    profile: list[str] = Field(default_factory=list)
     uptime: Optional[str] = None
     exit_code: Optional[int] = None
 
@@ -315,7 +316,7 @@ class ContainerResult(BaseModel):
     success: bool = False
     started: list[str] = Field(default_factory=list)
     failed: list[str] = Field(default_factory=list)
-    errors: list[str] = Field(default_factory=list)
+    errors: dict[str, str] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +325,9 @@ class ContainerResult(BaseModel):
 
 
 class ToolkitConfig(BaseModel):
-    mcp_servers: dict[str, Any] = Field(default_factory=dict)
-    containers: dict[str, Any] = Field(default_factory=dict)
+    mcp_servers: dict[str, ToolConfig] = Field(default_factory=dict)
+    containers: dict[str, ToolConfig] = Field(default_factory=dict)
     cli_tools: dict[str, ToolConfig] = Field(default_factory=dict)
-    docker_hub_path: Optional[str] = None
-    plugin_dir: Optional[str] = None
-    api_keys: dict[str, str] = Field(default_factory=dict)
+    docker_hub_path: Optional[Path] = None
+    plugin_dir: Optional[Path] = None
+    api_keys: dict[str, bool] = Field(default_factory=dict)
