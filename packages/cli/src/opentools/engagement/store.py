@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from opentools.chain.events import get_event_bus
 from opentools.engagement.schema import migrate
 from opentools.findings import check_duplicate, _normalize_path
 from opentools.models import (
@@ -244,6 +245,7 @@ class EngagementStore:
 
             if match:
                 result_id = self._merge_finding(match.match, finding, match.confidence)
+                was_merge = True
             else:
                 self._insert_finding_row(finding)
                 self._insert_timeline_event(
@@ -252,12 +254,22 @@ class EngagementStore:
                     finding.created_at, finding.id,
                 )
                 result_id = finding.id
+                was_merge = False
 
             self._conn.commit()
-            return result_id
         except Exception:
             self._conn.rollback()
             raise
+
+        # Emit after successful commit. Exceptions in handlers are swallowed
+        # by the event bus and cannot affect the store state.
+        event_name = "finding.updated" if was_merge else "finding.created"
+        get_event_bus().emit(
+            event_name,
+            finding_id=result_id,
+            engagement_id=finding.engagement_id,
+        )
+        return result_id
 
     def _query_dedup_candidates(self, finding: Finding) -> list[Finding]:
         if finding.file_path and finding.line_start is not None:
@@ -338,6 +350,7 @@ class EngagementStore:
 
         for i in range(0, len(findings), CHUNK):
             chunk = findings[i:i + CHUNK]
+            pending_events: list[tuple[str, str, str]] = []  # (event_name, finding_id, engagement_id)
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 for finding in chunk:
@@ -353,6 +366,7 @@ class EngagementStore:
                     if match:
                         self._merge_finding(match.match, finding, match.confidence)
                         results.append(match.match.id)
+                        pending_events.append(("finding.updated", match.match.id, finding.engagement_id))
                     else:
                         self._insert_finding_row(finding)
                         self._insert_timeline_event(
@@ -362,10 +376,17 @@ class EngagementStore:
                         )
                         batch_inserted.append(finding)
                         results.append(finding.id)
+                        pending_events.append(("finding.created", finding.id, finding.engagement_id))
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
+
+            # Emit per-finding events after successful commit
+            bus = get_event_bus()
+            for event_name, finding_id, engagement_id in pending_events:
+                bus.emit(event_name, finding_id=finding_id, engagement_id=engagement_id)
+
         return results
 
     def get_findings(
@@ -398,6 +419,7 @@ class EngagementStore:
             (str(status), finding_id),
         )
         self._conn.commit()
+        get_event_bus().emit("finding.updated", finding_id=finding_id)
 
     def flag_false_positive(self, finding_id: str) -> None:
         self._conn.execute(
@@ -405,6 +427,7 @@ class EngagementStore:
             (finding_id,),
         )
         self._conn.commit()
+        get_event_bus().emit("finding.deleted", finding_id=finding_id)
 
     def search_findings(self, query: str) -> list[Finding]:
         rows = self._conn.execute(

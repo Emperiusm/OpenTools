@@ -151,3 +151,96 @@ class IOCEnrichment(SQLModel, table=True):
     tags: Optional[str] = None  # JSON array
     fetched_at: datetime
     ttl_seconds: int = 86400
+
+
+# --- Chain data layer (Phase 3C.1) ---------------------------------------
+
+class ChainEntity(SQLModel, table=True):
+    """Canonical entity (host, CVE, user, etc.) extracted from findings."""
+    __tablename__ = "chain_entity"
+    id: str = Field(primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
+    type: str = Field(index=True)
+    canonical_value: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+    mention_count: int = Field(default=0)
+
+    __table_args__ = (
+        UniqueConstraint("type", "canonical_value", "user_id", name="uq_chain_entity"),
+    )
+
+
+class ChainEntityMention(SQLModel, table=True):
+    """One occurrence of an entity in a finding."""
+    __tablename__ = "chain_entity_mention"
+    id: str = Field(primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
+    entity_id: str = Field(foreign_key="chain_entity.id", index=True)
+    finding_id: str = Field(foreign_key="finding.id", index=True)
+    field: str
+    raw_value: str
+    offset_start: Optional[int] = None
+    offset_end: Optional[int] = None
+    extractor: str
+    confidence: float
+    created_at: datetime
+
+    __table_args__ = (
+        UniqueConstraint("entity_id", "finding_id", "field", "offset_start", name="uq_chain_mention"),
+    )
+
+
+class ChainFindingRelation(SQLModel, table=True):
+    """Directed edge in the attack chain graph."""
+    __tablename__ = "chain_finding_relation"
+    id: str = Field(primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
+    source_finding_id: str = Field(foreign_key="finding.id")
+    target_finding_id: str = Field(foreign_key="finding.id")
+    weight: float
+    weight_model_version: str = Field(default="additive_v1")
+    status: str
+    symmetric: bool = Field(default=False)
+    reasons_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    llm_rationale: Optional[str] = None
+    llm_relation_type: Optional[str] = None
+    llm_confidence: Optional[float] = None
+    confirmed_at_reasons_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_at: datetime
+    updated_at: datetime
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_finding_id", "target_finding_id", "user_id",
+            name="uq_chain_relation",
+        ),
+    )
+
+
+class ChainLinkerRun(SQLModel, table=True):
+    """Audit trail for linker invocations."""
+    __tablename__ = "chain_linker_run"
+    id: str = Field(primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    scope: str
+    scope_id: Optional[str] = None
+    mode: str
+    llm_provider: Optional[str] = None
+    findings_processed: int = Field(default=0)
+    entities_extracted: int = Field(default=0)
+    relations_created: int = Field(default=0)
+    relations_updated: int = Field(default=0)
+    relations_skipped_sticky: int = Field(default=0)
+    extraction_cache_hits: int = Field(default=0)
+    extraction_cache_misses: int = Field(default=0)
+    llm_calls_made: int = Field(default=0)
+    llm_cache_hits: int = Field(default=0)
+    llm_cache_misses: int = Field(default=0)
+    rule_stats_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    duration_ms: Optional[int] = None
+    error: Optional[str] = None
+    generation: int = Field(default=0)
+    status_text: Optional[str] = Field(default=None)

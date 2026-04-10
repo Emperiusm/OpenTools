@@ -1,0 +1,252 @@
+[
+  {
+    "id": "cf_001",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "high",
+    "status": "discovered",
+    "title": "Open SSH port on 10.0.0.5",
+    "description": "SSH service exposed on 10.0.0.5 port 22 running OpenSSH 7.4",
+    "created_at": "2026-04-01T10:00:00+00:00"
+  },
+  {
+    "id": "cf_002",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "medium",
+    "status": "discovered",
+    "title": "HTTP service detected on 10.0.0.5",
+    "description": "HTTP on 10.0.0.5 port 80 running Apache 2.4.41",
+    "created_at": "2026-04-01T10:02:00+00:00"
+  },
+  {
+    "id": "cf_003",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "medium",
+    "status": "discovered",
+    "title": "SMB port open on 10.0.0.5",
+    "description": "SMB service on 10.0.0.5 port 445, potential lateral movement vector",
+    "created_at": "2026-04-01T10:04:00+00:00"
+  },
+  {
+    "id": "cf_004",
+    "engagement_id": "eng_canonical",
+    "tool": "nuclei",
+    "severity": "high",
+    "status": "discovered",
+    "title": "CVE-2024-1234 Apache RCE on 10.0.0.5",
+    "description": "Remote code execution via CVE-2024-1234 on Apache 2.4.41 at 10.0.0.5:80",
+    "created_at": "2026-04-01T10:08:00+00:00"
+  },
+  {
+    "id": "cf_005",
+    "engagement_id": "eng_canonical",
+    "tool": "nuclei",
+    "severity": "critical",
+    "status": "discovered",
+    "title": "Critical RCE CVE-2024-1234 confirmed on 10.0.0.5",
+    "description": "CVE-2024-1234 exploitable with unauthenticated access on 10.0.0.5 port 80",
+    "created_at": "2026-04-01T10:10:00+00:00"
+  },
+  {
+    "id": "cf_006",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "low",
+    "status": "discovered",
+    "title": "FTP port open on 10.0.0.5",
+    "description": "FTP service on 10.0.0.5 port 21, anonymous login may be enabled",
+    "created_at": "2026-04-01T10:06:00+00:00"
+  },
+  {
+    "id": "cf_007",
+    "engagement_id": "eng_canonical",
+    "tool": "metasploit",
+    "severity": "high",
+    "status": "confirmed",
+    "title": "Phishing initial access T1566 identified",
+    "description": "Evidence of spear-phishing T1566 used as initial access vector in this engagement",
+    "created_at": "2026-04-01T11:00:00+00:00"
+  },
+  {
+    "id": "cf_008",
+    "engagement_id": "eng_canonical",
+    "tool": "metasploit",
+    "severity": "high",
+    "status": "confirmed",
+    "title": "Command and scripting interpreter T1059 abuse",
+    "description": "Attacker used T1059 PowerShell interpreter for persistence and lateral movement",
+    "created_at": "2026-04-01T11:15:00+00:00"
+  },
+  {
+    "id": "cf_009",
+    "engagement_id": "eng_canonical",
+    "tool": "burp",
+    "severity": "medium",
+    "status": "discovered",
+    "title": "Malicious domain evil.example.com in traffic",
+    "description": "C2 callback to evil.example.com detected in captured HTTP traffic",
+    "created_at": "2026-04-01T12:00:00+00:00"
+  },
+  {
+    "id": "cf_010",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "info",
+    "status": "discovered",
+    "title": "Open ports on 192.168.1.100",
+    "description": "Ports 22, 80, 443 open on 192.168.1.100 internal host",
+    "created_at": "2026-04-01T13:00:00+00:00"
+  },
+  {
+    "id": "cf_011",
+    "engagement_id": "eng_canonical",
+    "tool": "nuclei",
+    "severity": "medium",
+    "status": "discovered",
+    "title": "SSL misconfiguration on 192.168.1.100",
+    "description": "Weak cipher suites on 192.168.1.100 port 443, TLS 1.0 supported",
+    "created_at": "2026-04-01T13:10:00+00:00"
+  },
+  {
+    "id": "cf_012",
+    "engagement_id": "eng_canonical",
+    "tool": "ffuf",
+    "severity": "low",
+    "status": "discovered",
+    "title": "Directory traversal on 192.168.1.200",
+    "description": "Directory listing exposed on 192.168.1.200 via ffuf fuzzing of web root",
+    "created_at": "2026-04-01T14:00:00+00:00"
+  },
+  {
+    "id": "cf_013",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "info",
+    "status": "discovered",
+    "title": "DNS service on 10.0.0.1",
+    "description": "DNS resolver running on 10.0.0.1 port 53, open resolver check pending",
+    "created_at": "2026-04-01T09:00:00+00:00"
+  },
+  {
+    "id": "cf_014",
+    "engagement_id": "eng_canonical",
+    "tool": "sqlmap",
+    "severity": "critical",
+    "status": "discovered",
+    "title": "SQL injection on 192.168.1.200",
+    "description": "Blind SQLi found on 192.168.1.200 login endpoint, full DB dump possible",
+    "created_at": "2026-04-01T14:30:00+00:00"
+  },
+  {
+    "id": "cf_015",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "info",
+    "status": "discovered",
+    "title": "RDP port open on 10.0.0.20",
+    "description": "RDP on 10.0.0.20 port 3389, no NLA enforced",
+    "created_at": "2026-04-01T15:00:00+00:00"
+  },
+  {
+    "id": "cf_016",
+    "engagement_id": "eng_canonical",
+    "tool": "nuclei",
+    "severity": "medium",
+    "status": "discovered",
+    "title": "Outdated WordPress on 192.168.1.200",
+    "description": "WordPress 5.8.1 installed on 192.168.1.200 with known vulnerabilities",
+    "created_at": "2026-04-01T14:05:00+00:00"
+  },
+  {
+    "id": "cf_017",
+    "engagement_id": "eng_canonical",
+    "tool": "burp",
+    "severity": "low",
+    "status": "discovered",
+    "title": "Missing HSTS header on 10.0.0.5",
+    "description": "HTTP Strict Transport Security header absent on 10.0.0.5 port 80",
+    "created_at": "2026-04-01T10:12:00+00:00"
+  },
+  {
+    "id": "cf_018",
+    "engagement_id": "eng_canonical",
+    "tool": "metasploit",
+    "severity": "info",
+    "status": "discovered",
+    "title": "Unrelated noise finding A",
+    "description": "Generic informational banner grab, no vulnerability identified on host",
+    "created_at": "2026-04-02T08:00:00+00:00"
+  },
+  {
+    "id": "cf_019",
+    "engagement_id": "eng_canonical",
+    "tool": "ffuf",
+    "severity": "info",
+    "status": "discovered",
+    "title": "Unrelated noise finding B",
+    "description": "robots.txt enumeration returned no sensitive paths on target",
+    "created_at": "2026-04-02T08:10:00+00:00"
+  },
+  {
+    "id": "cf_020",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "info",
+    "status": "discovered",
+    "title": "Unrelated noise finding C",
+    "description": "ICMP ping sweep completed, 3 hosts responded on subnet 172.31.0.0/24",
+    "created_at": "2026-04-02T08:20:00+00:00"
+  },
+  {
+    "id": "cf_021",
+    "engagement_id": "eng_canonical",
+    "tool": "nuclei",
+    "severity": "high",
+    "status": "discovered",
+    "title": "Log4Shell CVE-2021-44228 on 10.0.0.5",
+    "description": "Log4j JNDI injection CVE-2021-44228 confirmed on 10.0.0.5 java application",
+    "created_at": "2026-04-01T10:09:00+00:00"
+  },
+  {
+    "id": "cf_022",
+    "engagement_id": "eng_canonical",
+    "tool": "nmap",
+    "severity": "medium",
+    "status": "discovered",
+    "title": "HTTPS service on 10.0.0.5",
+    "description": "HTTPS on 10.0.0.5 port 443 with valid certificate, TLS 1.2 only",
+    "created_at": "2026-04-01T10:03:00+00:00"
+  },
+  {
+    "id": "cf_023",
+    "engagement_id": "eng_canonical_2",
+    "tool": "burp",
+    "severity": "high",
+    "status": "discovered",
+    "title": "C2 callback to evil.example.com in second engagement",
+    "description": "Traffic to evil.example.com observed in second engagement proxy logs",
+    "created_at": "2026-04-01T12:30:00+00:00"
+  },
+  {
+    "id": "cf_024",
+    "engagement_id": "eng_canonical_2",
+    "tool": "nuclei",
+    "severity": "medium",
+    "status": "discovered",
+    "title": "Exposed admin panel on 10.10.0.5",
+    "description": "Admin panel accessible without auth on 10.10.0.5 port 8080",
+    "created_at": "2026-04-01T16:00:00+00:00"
+  },
+  {
+    "id": "cf_025",
+    "engagement_id": "eng_canonical_2",
+    "tool": "nmap",
+    "severity": "low",
+    "status": "discovered",
+    "title": "Telnet port open on 10.10.0.5",
+    "description": "Telnet service on 10.10.0.5 port 23, cleartext credential risk",
+    "created_at": "2026-04-01T16:05:00+00:00"
+  }
+]
