@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+# Root-level config for running all tests in one invocation.
+# asyncio_mode = "auto" is required by the web backend tests (async fixtures
+# and test functions without explicit @pytest.mark.asyncio decorators).
+# The CLI tests use plain synchronous tests or asyncio.run() wrappers so they
+# work correctly under either mode.
+asyncio_mode = "auto"
+testpaths = [
+    "packages/cli/tests",
+    "packages/web/backend/tests",
+]
