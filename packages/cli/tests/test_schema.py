@@ -69,7 +69,8 @@ def test_migration_v2_creates_dedup_indexes():
     conn.close()
 
 
-def test_migration_v1_to_v2_upgrade():
+def test_migration_v1_to_latest_upgrade():
+    """Verify incremental migration from v1 applies all pending migrations."""
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
     from opentools.engagement.schema import _migration_v1
@@ -78,9 +79,15 @@ def test_migration_v1_to_v2_upgrade():
     conn.commit()
     migrate(conn)
     version = get_schema_version(conn)
-    assert version == 2
+    assert version == LATEST_VERSION
+    # v2 dedup indexes must be present
     cursor = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_findings_dedup%'"
     )
     assert len(cursor.fetchall()) == 2
+    # v3 chain tables must be present
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('entity', 'entity_mention', 'finding_relation')"
+    )
+    assert len(cursor.fetchall()) == 3
     conn.close()

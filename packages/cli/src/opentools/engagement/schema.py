@@ -173,8 +173,143 @@ def _migration_v2(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_v3(conn: sqlite3.Connection) -> None:
+    """Add chain data layer tables (Phase 3C.1).
+
+    Creates the knowledge graph tables used for entity extraction, finding
+    relations, linker runs, and LLM caches. All tables reference findings(id)
+    via ON DELETE CASCADE so chain data cleans up when findings are hard-deleted.
+    Soft-deletes via findings.deleted_at do NOT cascade — the chain event
+    subscription layer (Task 23b) handles that path explicitly.
+    """
+    conn.executescript("""
+        -- Entity: canonical form of an extracted thing (host, CVE, user, etc.)
+        CREATE TABLE IF NOT EXISTS entity (
+            id              TEXT PRIMARY KEY,
+            type            TEXT NOT NULL,
+            canonical_value TEXT NOT NULL,
+            first_seen_at   TEXT NOT NULL,
+            last_seen_at    TEXT NOT NULL,
+            mention_count   INTEGER NOT NULL DEFAULT 0,
+            user_id         TEXT,
+            UNIQUE (type, canonical_value, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_entity_type_value ON entity(type, canonical_value);
+        CREATE INDEX IF NOT EXISTS idx_entity_user_type ON entity(user_id, type);
+
+        -- EntityMention: one row per occurrence of an entity in a finding
+        CREATE TABLE IF NOT EXISTS entity_mention (
+            id              TEXT PRIMARY KEY,
+            entity_id       TEXT NOT NULL REFERENCES entity(id) ON DELETE CASCADE,
+            finding_id      TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+            field           TEXT NOT NULL,
+            raw_value       TEXT NOT NULL,
+            offset_start    INTEGER,
+            offset_end      INTEGER,
+            extractor       TEXT NOT NULL,
+            confidence      REAL NOT NULL,
+            created_at      TEXT NOT NULL,
+            user_id         TEXT,
+            UNIQUE (entity_id, finding_id, field, offset_start)
+        );
+        CREATE INDEX IF NOT EXISTS idx_em_finding ON entity_mention(finding_id);
+        CREATE INDEX IF NOT EXISTS idx_em_entity ON entity_mention(entity_id);
+        CREATE INDEX IF NOT EXISTS idx_em_entity_finding ON entity_mention(entity_id, finding_id);
+
+        -- FindingRelation: directed edge in the attack chain graph
+        CREATE TABLE IF NOT EXISTS finding_relation (
+            id                        TEXT PRIMARY KEY,
+            source_finding_id         TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+            target_finding_id         TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+            weight                    REAL NOT NULL,
+            weight_model_version      TEXT NOT NULL DEFAULT 'additive_v1',
+            status                    TEXT NOT NULL,
+            symmetric                 INTEGER NOT NULL DEFAULT 0,
+            reasons_json              BLOB NOT NULL,
+            llm_rationale             TEXT,
+            llm_relation_type         TEXT,
+            llm_confidence            REAL,
+            confirmed_at_reasons_json BLOB,
+            created_at                TEXT NOT NULL,
+            updated_at                TEXT NOT NULL,
+            user_id                   TEXT,
+            UNIQUE (source_finding_id, target_finding_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_fr_source ON finding_relation(source_finding_id);
+        CREATE INDEX IF NOT EXISTS idx_fr_target ON finding_relation(target_finding_id);
+        CREATE INDEX IF NOT EXISTS idx_fr_status ON finding_relation(status);
+
+        -- LinkerRun: audit trail for linker invocations
+        CREATE TABLE IF NOT EXISTS linker_run (
+            id                       TEXT PRIMARY KEY,
+            started_at               TEXT NOT NULL,
+            finished_at              TEXT,
+            scope                    TEXT NOT NULL,
+            scope_id                 TEXT,
+            mode                     TEXT NOT NULL,
+            llm_provider             TEXT,
+            findings_processed       INTEGER NOT NULL DEFAULT 0,
+            entities_extracted       INTEGER NOT NULL DEFAULT 0,
+            relations_created        INTEGER NOT NULL DEFAULT 0,
+            relations_updated        INTEGER NOT NULL DEFAULT 0,
+            relations_skipped_sticky INTEGER NOT NULL DEFAULT 0,
+            extraction_cache_hits    INTEGER NOT NULL DEFAULT 0,
+            extraction_cache_misses  INTEGER NOT NULL DEFAULT 0,
+            llm_calls_made           INTEGER NOT NULL DEFAULT 0,
+            llm_cache_hits           INTEGER NOT NULL DEFAULT 0,
+            llm_cache_misses         INTEGER NOT NULL DEFAULT 0,
+            rule_stats_json          BLOB,
+            duration_ms              INTEGER,
+            error                    TEXT,
+            generation               INTEGER NOT NULL DEFAULT 0,
+            user_id                  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_lr_scope ON linker_run(scope, scope_id);
+        CREATE INDEX IF NOT EXISTS idx_lr_generation ON linker_run(generation DESC);
+
+        -- ExtractionCache: content-addressed cache for LLM entity extraction
+        CREATE TABLE IF NOT EXISTS extraction_cache (
+            cache_key       TEXT PRIMARY KEY,
+            provider        TEXT NOT NULL,
+            model           TEXT NOT NULL,
+            schema_version  INTEGER NOT NULL,
+            result_json     BLOB NOT NULL,
+            created_at      TEXT NOT NULL
+        );
+
+        -- LLMLinkCache: content-addressed cache for LLM link classification
+        CREATE TABLE IF NOT EXISTS llm_link_cache (
+            cache_key            TEXT PRIMARY KEY,
+            provider             TEXT NOT NULL,
+            model                TEXT NOT NULL,
+            schema_version       INTEGER NOT NULL,
+            classification_json  BLOB NOT NULL,
+            created_at           TEXT NOT NULL
+        );
+
+        -- FindingExtractionState: change detection for re-extraction
+        CREATE TABLE IF NOT EXISTS finding_extraction_state (
+            finding_id              TEXT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+            extraction_input_hash   TEXT NOT NULL,
+            last_extracted_at       TEXT NOT NULL,
+            last_extractor_set_json BLOB NOT NULL,
+            user_id                 TEXT
+        );
+
+        -- FindingParserOutput: structured parser output for parser-aware extractors
+        CREATE TABLE IF NOT EXISTS finding_parser_output (
+            finding_id      TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+            parser_name     TEXT NOT NULL,
+            data_json       BLOB NOT NULL,
+            created_at      TEXT NOT NULL,
+            user_id         TEXT,
+            PRIMARY KEY (finding_id, parser_name)
+        );
+    """)
+
+
 # Registry of all migrations keyed by version number
-MIGRATIONS: dict = {1: _migration_v1, 2: _migration_v2}
+MIGRATIONS: dict = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3}
 
 # The highest version number we know about
 LATEST_VERSION: int = max(MIGRATIONS.keys())
