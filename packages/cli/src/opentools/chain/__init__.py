@@ -10,7 +10,21 @@ from opentools.chain.config import (
     set_chain_config,
 )
 
-__all__ = ["ChainConfig", "get_chain_config", "reset_chain_config", "set_chain_config"]
+from opentools.chain.subscriptions import (
+    set_batch_context,
+    subscribe_chain_handlers,
+    reset_subscriptions,
+)
+
+__all__ = [
+    "ChainConfig",
+    "get_chain_config",
+    "reset_chain_config",
+    "set_chain_config",
+    "subscribe_chain_handlers",
+    "set_batch_context",
+    "reset_subscriptions",
+]
 
 # Built-in entity type registrations are wired up in Task 6.
 from opentools.chain import normalizers  # noqa: F401,E402
