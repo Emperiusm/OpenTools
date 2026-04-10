@@ -1,0 +1,13 @@
+{
+  "min_total_entities": 8,
+  "expected_present": [
+    {"type": "ip", "canonical_value": "10.0.0.5"},
+    {"type": "cve", "canonical_value": "CVE-2024-1234"},
+    {"type": "mitre_technique", "canonical_value": "T1566"},
+    {"type": "mitre_technique", "canonical_value": "T1059"},
+    {"type": "domain", "canonical_value": "evil.example.com"}
+  ],
+  "expected_min_mention_count": {
+    "ip:10.0.0.5": 4
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "min_total_relations": 3,
+  "expected_pairs": [
+    {"source": "cf_001", "target": "cf_002", "min_weight": 0.3, "symmetric": true},
+    {"source": "cf_004", "target": "cf_005", "min_weight": 0.3},
+    {"source": "cf_009", "target": "cf_023", "min_weight": 0.3, "symmetric": true}
+  ]
+}
