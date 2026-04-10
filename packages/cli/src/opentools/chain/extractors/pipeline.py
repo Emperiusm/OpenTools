@@ -9,20 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable
 
 import orjson
 
 from opentools.chain.config import ChainConfig
 from opentools.chain.extractors.base import ExtractedEntity, ExtractionContext
 from opentools.chain.extractors.ioc_finder import IocFinderExtractor
-from opentools.chain.extractors.llm._util import get_default_field
 from opentools.chain.extractors.llm.base import LLMExtractionProvider
 from opentools.chain.extractors.parser_aware import BUILTIN_PARSER_EXTRACTORS
-from opentools.chain.extractors.preprocess import split_code_blocks
 from opentools.chain.extractors.security_regex import BUILTIN_SECURITY_EXTRACTORS
 from opentools.chain.models import (
     Entity,
@@ -33,6 +31,8 @@ from opentools.chain.normalizers import normalize
 from opentools.chain.store_extensions import ChainStore
 from opentools.chain.types import MentionField
 from opentools.models import Finding
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -143,23 +143,26 @@ class ExtractionPipeline:
     # ─── stages ────────────────────────────────────────────────────────
 
     def _run_stage1(self, finding: Finding, ctx: ExtractionContext) -> list[ExtractedEntity]:
-        # Look up parser output from SQL side table (finding_parser_output)
-        row = self.store.execute_one(
+        # Look up all parser outputs from SQL side table (finding_parser_output)
+        rows = self.store.execute_all(
             "SELECT parser_name, data_json FROM finding_parser_output WHERE finding_id = ?",
             (finding.id,),
         )
-        if row is None:
-            return []
-        parser_name = row["parser_name"]
-        data = orjson.loads(row["data_json"])
         out: list[ExtractedEntity] = []
-        for ex in self.parser_extractors:
-            if ex.tool_name != parser_name:
-                continue
-            try:
-                out.extend(ex.extract(finding, data, ctx))
-            except Exception:
-                continue
+        for row in rows:
+            parser_name = row["parser_name"]
+            data = orjson.loads(row["data_json"])
+            for ex in self.parser_extractors:
+                if ex.tool_name != parser_name:
+                    continue
+                try:
+                    out.extend(ex.extract(finding, data, ctx))
+                except Exception as exc:
+                    logger.warning(
+                        "parser-aware extractor %s failed for finding %s: %s",
+                        ex.tool_name, finding.id, exc,
+                    )
+                    continue
         return out
 
     def _run_stage2(self, finding: Finding, ctx: ExtractionContext) -> list[ExtractedEntity]:
@@ -172,16 +175,20 @@ class ExtractionPipeline:
         for field, text in fields:
             if not text:
                 continue
-            # Code-block-aware split: prose-only extractors can skip code regions,
-            # but for 3C.1 we run every stage-2 extractor over the full text.
-            # Preprocessor is retained for later refinement.
-            _ = split_code_blocks(text)
+            # Note: prose/code splitting via split_code_blocks() is reserved for a
+            # future task where stage-2 extractors can opt to skip code regions.
+            # It is intentionally not used here in 3C.1 to keep the pipeline simple.
             for ex in self.security_extractors:
                 if hasattr(ex, "applies_to") and not ex.applies_to(finding):
                     continue
                 try:
                     out.extend(ex.extract(text, field, ctx))
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "security extractor %s failed for finding %s field %s: %s",
+                        getattr(ex, "name", type(ex).__name__),
+                        finding.id, field.value, exc,
+                    )
                     continue
         return out
 
@@ -191,18 +198,18 @@ class ExtractionPipeline:
         ctx: ExtractionContext,
         provider: LLMExtractionProvider,
     ) -> list[ExtractedEntity]:
-        prose_fields = [
-            finding.title or "",
-            finding.description or "",
-            finding.evidence or "",
-        ]
+        prose_fields = [finding.title or "", finding.description or "", finding.evidence or ""]
         combined = "\n".join(p for p in prose_fields if p)
         if not combined:
             return []
         try:
             results = asyncio.run(provider.extract_entities(combined, ctx))
             return list(results)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "LLM stage3 extraction failed for finding %s: %s",
+                finding.id, exc, exc_info=True,
+            )
             return []
 
     # ─── persistence ───────────────────────────────────────────────────
@@ -212,9 +219,14 @@ class ExtractionPipeline:
         finding: Finding,
         raw: list[ExtractedEntity],
     ) -> tuple[int, int]:
-        """Normalize, dedupe within-run, and upsert entities + mentions."""
+        """Normalize, dedupe within-run, and upsert entities + mentions.
+
+        mention_count is recomputed from entity_mention after insert to
+        avoid drift on re-extraction.
+        """
         now = _utcnow()
         entities_by_id: dict[str, Entity] = {}
+        new_entity_ids: set[str] = set()
         mentions: list[EntityMention] = []
 
         for ex in raw:
@@ -228,20 +240,23 @@ class ExtractionPipeline:
             if eid not in entities_by_id:
                 existing = self.store.get_entity(eid)
                 if existing is None:
+                    new_entity_ids.add(eid)
                     entities_by_id[eid] = Entity(
-                        id=eid,
-                        type=ex.type,
-                        canonical_value=canonical,
-                        first_seen_at=now,
-                        last_seen_at=now,
-                        mention_count=0,
+                        id=eid, type=ex.type, canonical_value=canonical,
+                        first_seen_at=now, last_seen_at=now, mention_count=0,
                     )
                 else:
-                    entities_by_id[eid] = existing
-
-            entity = entities_by_id[eid]
-            entity.last_seen_at = now
-            entity.mention_count += 1
+                    # Use existing first_seen_at, advance last_seen_at, RESET count
+                    # — count will be recomputed from entity_mention after insert
+                    entities_by_id[eid] = Entity(
+                        id=eid, type=existing.type, canonical_value=existing.canonical_value,
+                        first_seen_at=existing.first_seen_at,
+                        last_seen_at=now,
+                        mention_count=0,  # placeholder — recomputed below
+                        user_id=existing.user_id,
+                    )
+            else:
+                entities_by_id[eid].last_seen_at = now
 
             mentions.append(
                 EntityMention(
@@ -258,17 +273,22 @@ class ExtractionPipeline:
                 )
             )
 
-        entities_created = 0
+        # Upsert entities (with mention_count=0 placeholder)
         for entity in entities_by_id.values():
-            # Count entities that were brand-new in this run (not in DB before this run)
-            existing = self.store.get_entity(entity.id)
-            is_new = existing is None
             self.store.upsert_entity(entity)
-            if is_new:
-                entities_created += 1
 
+        # Insert new mentions
         self.store.add_mentions(mentions)
-        return entities_created, len(mentions)
+
+        # Recompute mention_count from ground truth for all touched entities
+        for eid in entities_by_id.keys():
+            self.store._conn.execute(
+                "UPDATE entity SET mention_count = (SELECT COUNT(*) FROM entity_mention WHERE entity_id = ?) WHERE id = ?",
+                (eid, eid),
+            )
+        self.store._conn.commit()
+
+        return len(new_entity_ids), len(mentions)
 
     def _hash_matches(self, finding_id: str, new_hash: str) -> bool:
         row = self.store.execute_one(

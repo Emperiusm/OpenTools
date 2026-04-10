@@ -145,3 +145,65 @@ def test_pipeline_normalizes_entity_values(engagement_store_and_chain):
     entity = chain_store.get_entity(cve_mention.entity_id)
     assert entity is not None
     assert entity.canonical_value == "CVE-2024-1234"  # normalized
+
+
+def test_mention_count_matches_ground_truth_after_force_rerun(engagement_store_and_chain):
+    """Regression: force re-extraction must not double-count mentions.
+
+    Before the fix, mention_count would drift upward on every re-extraction
+    because it was incremented from the already-incremented stored value
+    rather than recomputed from ground truth.
+    """
+    engagement_store, chain_store, now = engagement_store_and_chain
+    finding = _finding(description="10.0.0.5 appears here")
+    _insert_finding(engagement_store, finding)
+
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline.extract_for_finding(finding)
+    pipeline.extract_for_finding(finding, force=True)
+    pipeline.extract_for_finding(finding, force=True)
+
+    # Check that every entity's mention_count matches the actual number of rows
+    rows = chain_store.execute_all("SELECT id, mention_count FROM entity")
+    for row in rows:
+        entity_id = row["id"]
+        stored_count = row["mention_count"]
+        actual = chain_store.execute_one(
+            "SELECT COUNT(*) FROM entity_mention WHERE entity_id = ?",
+            (entity_id,),
+        )
+        assert stored_count == actual[0], (
+            f"entity {entity_id}: mention_count={stored_count} but {actual[0]} mention rows exist"
+        )
+
+
+def test_mention_count_accurate_across_findings(engagement_store_and_chain):
+    """Entity shared between two findings has mention_count = 2.
+
+    After re-extracting one of the findings, mention_count must still be 2.
+    """
+    engagement_store, chain_store, now = engagement_store_and_chain
+    finding_a = _finding().model_copy(update={"id": "fnd_a", "description": "see 10.0.0.5 now"})
+    finding_b = _finding().model_copy(update={"id": "fnd_b", "description": "also 10.0.0.5 here"})
+    _insert_finding(engagement_store, finding_a)
+    _insert_finding(engagement_store, finding_b)
+
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline.extract_for_finding(finding_a)
+    pipeline.extract_for_finding(finding_b)
+
+    # Find the ip entity
+    ip_row = chain_store.execute_one(
+        "SELECT id, mention_count FROM entity WHERE type = 'ip' AND canonical_value = '10.0.0.5'",
+    )
+    assert ip_row is not None
+    assert ip_row["mention_count"] == 2
+
+    # Re-extract finding_a with force
+    pipeline.extract_for_finding(finding_a, force=True)
+    ip_row = chain_store.execute_one(
+        "SELECT id, mention_count FROM entity WHERE type = 'ip' AND canonical_value = '10.0.0.5'",
+    )
+    assert ip_row["mention_count"] == 2, (
+        f"after re-extraction, mention_count should still be 2, got {ip_row['mention_count']}"
+    )
