@@ -1,0 +1,33 @@
+from opentools.chain.config import ChainConfig
+
+
+def test_chain_config_defaults():
+    cfg = ChainConfig()
+    assert cfg.enabled is True
+    assert cfg.extraction.llm_enabled is False
+    assert cfg.linker.confirmed_threshold == 1.0
+    assert cfg.linker.candidate_min_weight == 0.3
+    assert cfg.linker.max_edge_weight == 5.0
+    assert cfg.linker.common_entity_pct == 0.20
+    assert cfg.linker.idf_enabled is True
+    assert cfg.query.default_k == 5
+    assert cfg.query.default_max_hops == 6
+    assert cfg.query.graph_cache_size == 8
+
+
+def test_tool_chain_defaults_populated():
+    cfg = ChainConfig()
+    assert len(cfg.linker.tool_chains) >= 4
+    names = {tc.from_tool for tc in cfg.linker.tool_chains}
+    assert "nmap" in names
+    assert "burp" in names
+
+
+def test_rule_weight_overrides():
+    cfg = ChainConfig.model_validate({
+        "linker": {"rules": {"shared_strong_entity": {"weight": 2.0, "enabled": False}}}
+    })
+    assert cfg.linker.rules.shared_strong_entity.weight == 2.0
+    assert cfg.linker.rules.shared_strong_entity.enabled is False
+    # Other rules keep defaults
+    assert cfg.linker.rules.temporal_proximity.weight == 0.5
