@@ -137,6 +137,20 @@ class ChainStore:
                  status, symmetric, reasons_json, llm_rationale, llm_relation_type,
                  llm_confidence, confirmed_at_reasons_json, created_at, updated_at, user_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                weight=excluded.weight,
+                weight_model_version=excluded.weight_model_version,
+                status=CASE
+                    WHEN finding_relation.status IN ('user_confirmed', 'user_rejected')
+                    THEN finding_relation.status
+                    ELSE excluded.status
+                END,
+                symmetric=excluded.symmetric,
+                reasons_json=excluded.reasons_json,
+                llm_rationale=excluded.llm_rationale,
+                llm_relation_type=excluded.llm_relation_type,
+                llm_confidence=excluded.llm_confidence,
+                updated_at=excluded.updated_at
             ON CONFLICT(source_finding_id, target_finding_id, user_id) DO UPDATE SET
                 weight=excluded.weight,
                 weight_model_version=excluded.weight_model_version,
