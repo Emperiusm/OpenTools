@@ -13,4 +13,4 @@ from opentools.chain.config import (
 __all__ = ["ChainConfig", "get_chain_config", "reset_chain_config", "set_chain_config"]
 
 # Built-in entity type registrations are wired up in Task 6.
-# from opentools.chain import normalizers  # noqa: F401,E402
+from opentools.chain import normalizers  # noqa: F401,E402

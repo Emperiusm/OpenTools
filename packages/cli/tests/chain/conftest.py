@@ -53,3 +53,16 @@ def engagement_store_and_chain(tmp_path):
     )
     engagement_store.create(engagement)
     yield engagement_store, chain_store, now
+
+
+@pytest.fixture(autouse=True)
+def _reset_entity_type_registry():
+    """Protect test isolation: tests that register custom entity types
+    don't persist those registrations into later tests. Built-in types
+    are re-registered via module re-import if they were cleared.
+    """
+    from opentools.chain.types import ENTITY_TYPE_REGISTRY
+    snapshot = dict(ENTITY_TYPE_REGISTRY)
+    yield
+    ENTITY_TYPE_REGISTRY.clear()
+    ENTITY_TYPE_REGISTRY.update(snapshot)
