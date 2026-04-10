@@ -33,6 +33,8 @@ report_app = typer.Typer(name="report", help="Report generation")
 audit_app = typer.Typer(name="audit", help="Audit trail")
 config_app = typer.Typer(name="config", help="Configuration")
 
+from opentools.chain.cli import app as chain_app  # noqa: E402
+
 app.add_typer(engagement_app)
 app.add_typer(findings_app)
 app.add_typer(iocs_app)
@@ -42,6 +44,7 @@ app.add_typer(recipe_app)
 app.add_typer(report_app)
 app.add_typer(audit_app)
 app.add_typer(config_app)
+app.add_typer(chain_app)
 
 
 # ---------------------------------------------------------------------------
