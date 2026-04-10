@@ -6,7 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
+from app.auth import fastapi_users, auth_backend
 from app.config import settings
+from app.models import UserRead, UserCreate
 
 
 @asynccontextmanager
@@ -35,3 +37,16 @@ if settings.allowed_origins:
 @app.get("/api/v1/health")
 async def health():
     return {"status": "ok", "version": "0.1.0"}
+
+
+# Auth routes
+app.include_router(
+    fastapi_users.get_auth_router(auth_backend),
+    prefix="/api/v1/auth",
+    tags=["auth"],
+)
+app.include_router(
+    fastapi_users.get_register_router(UserRead, UserCreate),
+    prefix="/api/v1/auth",
+    tags=["auth"],
+)
