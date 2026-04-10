@@ -496,6 +496,41 @@ The registry auto-discovers parser modules — no registration needed.
 
 ---
 
+## Web Dashboard
+
+A full-stack web interface for multi-user engagement management.
+
+### Quick Start
+
+```bash
+cd packages/web
+cp .env.example .env
+# Edit .env with your POSTGRES_PASSWORD and SECRET_KEY
+
+# Build frontend
+cd frontend && npm install && npm run build && cd ..
+
+# Start services
+docker compose up -d
+# Dashboard: http://localhost
+# API docs: http://localhost:8000/docs
+```
+
+### Development
+
+```bash
+# Terminal 1: API with hot-reload
+make dev-api
+
+# Terminal 2: Frontend with HMR
+make dev-ui
+
+# Run tests
+make test
+```
+
+---
+
 ## Roadmap
 
 ### Phase 1
