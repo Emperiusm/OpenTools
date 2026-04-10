@@ -124,16 +124,32 @@ _config_singleton: ChainConfig | None = None
 
 
 def get_chain_config() -> ChainConfig:
-    """Return the singleton ChainConfig, loading from toolkit config if needed."""
+    """Return the singleton ChainConfig.
+
+    Tries to load from the toolkit YAML config's ``chain:`` section if present.
+    Falls back to default ChainConfig() when:
+    - the toolkit config file is missing
+    - ToolkitConfig has no ``chain`` attribute (expected until the integration
+      task lands that adds a ``chain:`` field to ToolkitConfig)
+
+    Pydantic ValidationError from a malformed ``chain:`` section is NOT
+    swallowed — it surfaces so users get an actionable error.
+    """
     global _config_singleton
     if _config_singleton is None:
         try:
-            from opentools.config import get_toolkit_config
-            toolkit = get_toolkit_config()
+            from opentools.config import ConfigLoader
+            toolkit = ConfigLoader().load()
             raw = getattr(toolkit, "chain", None)
-            _config_singleton = ChainConfig.model_validate(raw) if raw else ChainConfig()
-        except Exception:
-            _config_singleton = ChainConfig()
+        except FileNotFoundError:
+            # No toolkit config file on disk — use defaults.
+            raw = None
+        except (ImportError, AttributeError, TypeError):
+            # Integration not yet wired — use defaults.
+            # TypeError covers ConfigLoader requiring positional args not yet
+            # available in this context (plugin_dir).
+            raw = None
+        _config_singleton = ChainConfig.model_validate(raw) if raw else ChainConfig()
     return _config_singleton
 
 
