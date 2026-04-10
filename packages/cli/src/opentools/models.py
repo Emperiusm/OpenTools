@@ -331,3 +331,51 @@ class ToolkitConfig(BaseModel):
     docker_hub_path: Optional[Path] = None
     plugin_dir: Optional[Path] = None
     api_keys: dict[str, bool] = Field(default_factory=dict)
+
+
+# ─── Correlation & Enrichment Models ────────────────────────────────────────
+
+class CorrelationResult(BaseModel):
+    ioc_type: str
+    ioc_value: str
+    engagements: list[dict] = Field(default_factory=list)
+    engagement_count: int = 0
+    total_occurrences: int = 0
+    first_seen_global: Optional[datetime] = None
+    last_seen_global: Optional[datetime] = None
+    active_days: int = 0
+    enrichments: list[dict] = Field(default_factory=list)
+    aggregated_risk_score: Optional[int] = None
+
+
+class TrendingIOC(BaseModel):
+    ioc_type: str
+    ioc_value: str
+    context: Optional[str] = None
+    engagement_count: int = 0
+    total_occurrences: int = 0
+    frequency_by_month: dict[str, int] = Field(default_factory=dict)
+    risk_score: Optional[int] = None
+    trend: str = "stable"
+
+
+class EnrichmentResult(BaseModel):
+    provider: str
+    risk_score: Optional[int] = None
+    tags: list[str] = Field(default_factory=list)
+    data: dict = Field(default_factory=dict)
+    fetched_at: Optional[datetime] = None
+    is_stale: bool = False
+    confidence: float = 0.5
+
+
+class IOCEnrichmentRecord(BaseModel):
+    id: str
+    ioc_type: str
+    ioc_value: str
+    provider: str
+    data: dict = Field(default_factory=dict)
+    risk_score: Optional[int] = None
+    tags: list[str] = Field(default_factory=list)
+    fetched_at: Optional[datetime] = None
+    ttl_seconds: int = 86400

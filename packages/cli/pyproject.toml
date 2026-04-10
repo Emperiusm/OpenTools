@@ -12,6 +12,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "stix2>=3.0",
     "textual>=8.0",
+    "httpx>=0.28",
 ]
 
 [project.scripts]

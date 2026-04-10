@@ -14,6 +14,8 @@ const router = createRouter({
     { path: '/recipes', name: 'recipes', component: () => import('@/views/RecipeListView.vue') },
     { path: '/recipes/:id/run', name: 'recipe-run', component: () => import('@/views/RecipeRunnerView.vue') },
     { path: '/containers', name: 'containers', component: () => import('@/views/ContainerStatusView.vue') },
+    { path: '/iocs/correlate', name: 'ioc-correlate', component: () => import('@/views/IOCCorrelationView.vue') },
+    { path: '/iocs/trending', name: 'ioc-trending', component: () => import('@/views/IOCTrendingView.vue') },
   ],
 })
 
