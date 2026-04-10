@@ -451,6 +451,136 @@ def findings_export(
 # ---------------------------------------------------------------------------
 
 
+@iocs_app.command("correlate")
+def iocs_correlate(
+    value: str = typer.Argument(..., help="IOC value to search"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Find cross-engagement correlations for an IOC."""
+    try:
+        store = _get_store()
+        from opentools.correlation.engine import CorrelationEngine
+        engine = CorrelationEngine(store)
+        result = engine.correlate(value)
+
+        if json_output:
+            console.print_json(result.model_dump_json())
+            return
+
+        if result.engagement_count == 0:
+            console.print(f"[yellow]No engagements found with IOC: {value}[/]")
+            return
+
+        console.print(f"\n[bold]IOC:[/] {result.ioc_value} ({result.ioc_type})")
+        console.print(f"[bold]Seen in:[/] {result.engagement_count} engagements, "
+                      f"{result.total_occurrences} total occurrences")
+        if result.active_days > 0:
+            console.print(f"[bold]Active:[/] {result.active_days} days")
+
+        table = Table(title="Engagements")
+        table.add_column("Name")
+        table.add_column("First Seen")
+        table.add_column("Last Seen")
+        for eng in result.engagements:
+            table.add_row(
+                eng.get("name", "—"),
+                eng.get("first_seen", "—")[:10] if eng.get("first_seen") else "—",
+                eng.get("last_seen", "—")[:10] if eng.get("last_seen") else "—",
+            )
+        console.print(table)
+    except Exception as e:
+        _error(str(e))
+
+
+@iocs_app.command("trending")
+def iocs_trending(
+    limit: int = typer.Option(10, help="Number of IOCs"),
+    days: int = typer.Option(30, help="Timeframe in days"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Show top trending IOCs."""
+    try:
+        store = _get_store()
+        from opentools.correlation.trending import TrendingEngine
+        engine = TrendingEngine(store)
+        results = engine.hot_iocs(limit, days)
+
+        if json_output:
+            console.print_json(data=[r.model_dump(mode="json") for r in results])
+            return
+
+        if not results:
+            console.print(f"[yellow]No trending IOCs in the last {days} days[/]")
+            return
+
+        table = Table(title=f"Hot IOCs (last {days} days)")
+        table.add_column("#")
+        table.add_column("Type")
+        table.add_column("Value")
+        table.add_column("Engagements", justify="right")
+        table.add_column("Occurrences", justify="right")
+        table.add_column("Trend")
+        for i, ioc in enumerate(results, 1):
+            trend_icon = {"rising": "[red]↑[/]", "declining": "[blue]↓[/]", "stable": "="}[ioc.trend]
+            table.add_row(
+                str(i),
+                ioc.ioc_type,
+                ioc.ioc_value[:50],
+                str(ioc.engagement_count),
+                str(ioc.total_occurrences),
+                f"{trend_icon} {ioc.trend}",
+            )
+        console.print(table)
+    except Exception as e:
+        _error(str(e))
+
+
+@iocs_app.command("enrich")
+def iocs_enrich(
+    value: str = typer.Argument(..., help="IOC value"),
+    ioc_type: str = typer.Option(..., "--type", help="IOC type (ip, domain, hash_sha256, etc.)"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Fetch enrichment from all providers."""
+    import asyncio
+    try:
+        from opentools.correlation.enrichment import get_providers
+        from opentools.correlation.enrichment.manager import EnrichmentManager
+
+        providers = get_providers()
+        if not providers:
+            console.print("[yellow]No enrichment providers configured.[/]")
+            return
+
+        manager = EnrichmentManager(providers)
+        results = asyncio.run(manager.enrich_single(ioc_type, value, force_refresh=True))
+
+        if json_output:
+            console.print_json(data=[r.model_dump(mode="json") for r in results])
+            return
+
+        if not results:
+            console.print(f"[yellow]No providers support type: {ioc_type}[/]")
+            return
+
+        table = Table(title=f"Enrichment: {value} ({ioc_type})")
+        table.add_column("Provider")
+        table.add_column("Risk Score", justify="right")
+        table.add_column("Tags")
+        table.add_column("Confidence", justify="right")
+        for r in results:
+            score = str(r.risk_score) if r.risk_score is not None else "—"
+            tags = ", ".join(r.tags[:3]) if r.tags else "—"
+            table.add_row(r.provider, score, tags, f"{r.confidence:.2f}")
+        console.print(table)
+
+        agg = EnrichmentManager.aggregate_risk_score(results, ioc_type)
+        if agg is not None:
+            console.print(f"\n[bold]Aggregated Risk Score:[/] {agg}/100")
+    except Exception as e:
+        _error(str(e))
+
+
 @iocs_app.command("export")
 def iocs_export(
     engagement: str = typer.Argument(help="Engagement name or ID"),
