@@ -18,6 +18,7 @@ from app.routes import (
     reports,
     exports,
     system,
+    correlation,
 )
 
 
@@ -65,3 +66,4 @@ app.include_router(recipes.router)
 app.include_router(reports.router)
 app.include_router(exports.router)
 app.include_router(system.router)
+app.include_router(correlation.router)

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi_users import schemas as fu_schemas
-from sqlalchemy import Column, Index, Text, JSON
+from sqlalchemy import Column, Index, Text, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -132,3 +132,22 @@ class AuditEntry(SQLModel, table=True):
     engagement_id: Optional[str] = None
     result: str
     details: Optional[str] = None
+
+
+# --- IOCEnrichment --------------------------------------------------------
+
+class IOCEnrichment(SQLModel, table=True):
+    __tablename__ = "ioc_enrichment"
+    __table_args__ = (
+        UniqueConstraint("user_id", "ioc_type", "ioc_value", "provider", name="uq_enrichment"),
+    )
+    id: str = Field(primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
+    ioc_type: str = Field(index=True)
+    ioc_value: str = Field(index=True)
+    provider: str
+    data: Optional[str] = None  # JSON string
+    risk_score: Optional[int] = None
+    tags: Optional[str] = None  # JSON array
+    fetched_at: datetime
+    ttl_seconds: int = 86400
