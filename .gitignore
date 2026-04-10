@@ -22,3 +22,6 @@ dist/
 
 # Node
 node_modules/
+
+# Git worktrees
+.worktrees/
