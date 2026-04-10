@@ -1,10 +1,11 @@
 {
   "compilerOptions": {
+    "composite": true,
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
+    "emitDeclarationOnly": true,
+    "declarationDir": ".tsc-out",
     "strict": true,
     "skipLibCheck": true
   },
