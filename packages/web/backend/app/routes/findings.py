@@ -77,6 +77,40 @@ async def create_finding(
     return finding
 
 
+@router.get("/findings/search")
+async def search_findings(
+    q: str,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    service = FindingService(db, user)
+    results = await service.search(q, limit)
+    return {"items": results, "count": len(results)}
+
+
+@router.patch("/findings/bulk/false-positive")
+async def bulk_flag_false_positive(
+    body: BulkFPRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    service = FindingService(db, user)
+    count = await service.bulk_flag_fp(body.finding_ids)
+    return {"updated": count}
+
+
+@router.patch("/findings/bulk/status")
+async def bulk_update_status(
+    body: BulkStatusRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    service = FindingService(db, user)
+    count = await service.bulk_update_status(body.finding_ids, body.status)
+    return {"updated": count}
+
+
 @router.get("/findings/{finding_id}")
 async def get_finding(
     finding_id: str,
@@ -115,37 +149,3 @@ async def flag_false_positive(
     if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
     return finding
-
-
-@router.get("/findings/search")
-async def search_findings(
-    q: str,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    service = FindingService(db, user)
-    results = await service.search(q, limit)
-    return {"items": results, "count": len(results)}
-
-
-@router.patch("/findings/bulk/false-positive")
-async def bulk_flag_false_positive(
-    body: BulkFPRequest,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    service = FindingService(db, user)
-    count = await service.bulk_flag_fp(body.finding_ids)
-    return {"updated": count}
-
-
-@router.patch("/findings/bulk/status")
-async def bulk_update_status(
-    body: BulkStatusRequest,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    service = FindingService(db, user)
-    count = await service.bulk_update_status(body.finding_ids, body.status)
-    return {"updated": count}

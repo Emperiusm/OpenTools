@@ -1,9 +1,10 @@
 """SQLModel table definitions for the web dashboard."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
+from fastapi_users import schemas as fu_schemas
 from sqlalchemy import Column, Index, Text, JSON
 from sqlmodel import Field, SQLModel
 
@@ -14,23 +15,19 @@ class User(SQLModel, table=True):
     __tablename__ = "user"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     email: str = Field(unique=True, index=True, max_length=320)
-    hashed_password: str
+    hashed_password: str = Field(default="")
     is_active: bool = Field(default=True)
     is_superuser: bool = Field(default=False)
     is_verified: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(datetime.UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class UserRead(SQLModel):
-    id: uuid.UUID
-    email: str
-    is_active: bool
-    created_at: datetime
+class UserRead(fu_schemas.BaseUser[uuid.UUID]):
+    pass
 
 
-class UserCreate(SQLModel):
-    email: str
-    password: str
+class UserCreate(fu_schemas.BaseUserCreate):
+    pass
 
 
 # --- Engagement -----------------------------------------------------------
