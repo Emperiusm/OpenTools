@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 from opentools.chain.config import (
     ChainConfig,
     get_chain_config,
@@ -54,17 +52,13 @@ def test_reset_chain_config_clears_singleton():
     assert a is not b
 
 
-def test_get_chain_config_falls_back_when_toolkit_missing(monkeypatch):
-    """When ConfigLoader raises FileNotFoundError, return default ChainConfig."""
-    reset_chain_config()
-    from opentools.chain import config as chain_config_module
+def test_set_chain_config_overrides_singleton():
+    from opentools.chain.config import set_chain_config
 
-    class _FailingLoader:
-        def load(self):
-            raise FileNotFoundError("no config file")
-
-    with patch("opentools.config.ConfigLoader", _FailingLoader):
-        cfg = get_chain_config()
-    assert isinstance(cfg, ChainConfig)
-    assert cfg.enabled is True  # default
     reset_chain_config()
+    custom = ChainConfig.model_validate({"enabled": False})
+    set_chain_config(custom)
+    assert get_chain_config() is custom
+    assert get_chain_config().enabled is False
+    reset_chain_config()
+    assert get_chain_config().enabled is True  # back to default

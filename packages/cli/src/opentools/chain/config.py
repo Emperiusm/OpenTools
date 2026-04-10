@@ -126,34 +126,37 @@ _config_singleton: ChainConfig | None = None
 def get_chain_config() -> ChainConfig:
     """Return the singleton ChainConfig.
 
-    Tries to load from the toolkit YAML config's ``chain:`` section if present.
-    Falls back to default ChainConfig() when:
-    - the toolkit config file is missing
-    - ToolkitConfig has no ``chain`` attribute (expected until the integration
-      task lands that adds a ``chain:`` field to ToolkitConfig)
+    Currently returns a default ChainConfig(). Toolkit YAML integration
+    (loading from a ``chain:`` section in ``toolkit.yaml``) is deferred
+    until a later phase adds a ``chain`` field to
+    :class:`opentools.models.ToolkitConfig`. At that point this function
+    will read the toolkit config and validate the ``chain`` subsection.
 
-    Pydantic ValidationError from a malformed ``chain:`` section is NOT
-    swallowed — it surfaces so users get an actionable error.
+    For tests and future integration, the singleton can be overridden via
+    :func:`set_chain_config` and cleared via :func:`reset_chain_config`.
     """
     global _config_singleton
     if _config_singleton is None:
-        try:
-            from opentools.config import ConfigLoader
-            toolkit = ConfigLoader().load()
-            raw = getattr(toolkit, "chain", None)
-        except FileNotFoundError:
-            # No toolkit config file on disk — use defaults.
-            raw = None
-        except (ImportError, AttributeError, TypeError):
-            # Integration not yet wired — use defaults.
-            # TypeError covers ConfigLoader requiring positional args not yet
-            # available in this context (plugin_dir).
-            raw = None
-        _config_singleton = ChainConfig.model_validate(raw) if raw else ChainConfig()
+        _config_singleton = ChainConfig()
     return _config_singleton
 
 
+def set_chain_config(config: ChainConfig) -> None:
+    """Override the singleton ChainConfig.
+
+    Intended for tests and for the future toolkit-integration task to
+    inject a config loaded from YAML. Passing a validated ChainConfig
+    instance bypasses the default path entirely.
+    """
+    global _config_singleton
+    _config_singleton = config
+
+
 def reset_chain_config() -> None:
-    """Test helper — clear the singleton."""
+    """Clear the singleton so the next call returns a fresh default.
+
+    Test helper — also used by :func:`set_chain_config` consumers who
+    want to restore defaults after an override.
+    """
     global _config_singleton
     _config_singleton = None
