@@ -9,6 +9,16 @@ from starlette.middleware.gzip import GZipMiddleware
 from app.auth import fastapi_users, auth_backend
 from app.config import settings
 from app.models import UserRead, UserCreate
+from app.routes import (
+    engagements,
+    findings,
+    iocs,
+    containers,
+    recipes,
+    reports,
+    exports,
+    system,
+)
 
 
 @asynccontextmanager
@@ -34,11 +44,6 @@ if settings.allowed_origins:
     )
 
 
-@app.get("/api/v1/health")
-async def health():
-    return {"status": "ok", "version": "0.1.0"}
-
-
 # Auth routes
 app.include_router(
     fastapi_users.get_auth_router(auth_backend),
@@ -50,3 +55,13 @@ app.include_router(
     prefix="/api/v1/auth",
     tags=["auth"],
 )
+
+# API routes
+app.include_router(engagements.router)
+app.include_router(findings.router)
+app.include_router(iocs.router)
+app.include_router(containers.router)
+app.include_router(recipes.router)
+app.include_router(reports.router)
+app.include_router(exports.router)
+app.include_router(system.router)
