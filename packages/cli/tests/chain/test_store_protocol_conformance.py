@@ -134,7 +134,8 @@ async def conformant_store(request, tmp_path):
         # Apply the same tz-aware datetime shim the production engine
         # installs in app.database, so the conformance fixture's own
         # User.add() and every protocol method that binds a naive
-        # datetime survives asyncpg's TIMESTAMPTZ encoder.
+        # datetime survives asyncpg's TIMESTAMPTZ encoder. Must use
+        # retval=True so the listener can replace immutable tuple params.
         try:
             from app.database import stamp_naive_datetimes_utc
             from sqlalchemy import event
@@ -142,6 +143,7 @@ async def conformant_store(request, tmp_path):
                 engine.sync_engine,
                 "before_cursor_execute",
                 stamp_naive_datetimes_utc,
+                retval=True,
             )
         except Exception:  # pragma: no cover
             pass

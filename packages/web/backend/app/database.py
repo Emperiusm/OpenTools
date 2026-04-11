@@ -36,6 +36,10 @@ def stamp_naive_datetimes_utc(
     to UTC-aware right before the DBAPI sees it. Idempotent on already
     tz-aware values and a no-op on SQLite (which stores both variants
     as ISO strings).
+
+    Registered with ``retval=True`` so SQLAlchemy picks up the modified
+    parameters even when they arrive as immutable tuples (the asyncpg
+    dialect uses positional tuple parameters by default).
     """
 
     def _fix(value):
@@ -43,24 +47,33 @@ def stamp_naive_datetimes_utc(
             return value.replace(tzinfo=timezone.utc)
         return value
 
+    def _fix_row(row):
+        if isinstance(row, dict):
+            return {k: _fix(v) for k, v in row.items()}
+        if isinstance(row, tuple):
+            return tuple(_fix(v) for v in row)
+        if isinstance(row, list):
+            return [_fix(v) for v in row]
+        return row
+
     if parameters is None:
-        return
-    if executemany:
-        if isinstance(parameters, list):
-            for idx, row in enumerate(parameters):
-                if isinstance(row, dict):
-                    parameters[idx] = {k: _fix(v) for k, v in row.items()}
-                elif isinstance(row, (list, tuple)):
-                    parameters[idx] = type(row)(_fix(v) for v in row)
-        return
-    if isinstance(parameters, dict):
-        for k in list(parameters.keys()):
-            parameters[k] = _fix(parameters[k])
+        return statement, parameters
+
+    if executemany and isinstance(parameters, list):
+        new_params = [_fix_row(r) for r in parameters]
+        return statement, new_params
+
+    return statement, _fix_row(parameters)
 
 
 # AsyncEngine exposes the underlying sync_engine for Core event hooks.
+# retval=True lets us return modified (statement, parameters) tuples
+# for immutable param containers (asyncpg uses positional tuples).
 event.listen(
-    engine.sync_engine, "before_cursor_execute", stamp_naive_datetimes_utc
+    engine.sync_engine,
+    "before_cursor_execute",
+    stamp_naive_datetimes_utc,
+    retval=True,
 )
 
 
