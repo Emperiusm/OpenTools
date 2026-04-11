@@ -1,12 +1,17 @@
 """Chain service — thin wrapper over PostgresChainStore + shared query engine.
 
-Phase 5B of the chain async-store refactor. Every method delegates to
-:class:`opentools.chain.stores.postgres_async.PostgresChainStore` via
-:mod:`app.services.chain_store_factory`, and the k-shortest-paths query
-uses the real :class:`opentools.chain.query.engine.ChainQueryEngine`
-instead of a local rustworkx stub. This removes all hand-rolled SQL
-from the web backend's chain layer — the service is now a thin
-adapter over the shared pipeline.
+Phase 5B of the chain async-store refactor delegated the MUTATING
+paths (``create_linker_run_pending``, ``k_shortest_paths``) to
+:class:`opentools.chain.stores.postgres_async.PostgresChainStore` but
+left the READ path on raw SQLModel ORM selects for pragmatic
+reasons (the routes expected web row shapes).
+
+The deferred follow-up (tracked in the session 4 handoff) closes
+that gap: every read method now delegates to
+``PostgresChainStore`` too and converts the CLI domain return
+values to response dicts via :mod:`app.services.chain_dto`. Zero
+remaining hand-rolled ORM selects in this module — the service is
+now a thin adapter over the shared pipeline.
 
 Read-only queries open a store around the request-scoped
 ``AsyncSession`` (via :func:`chain_store_from_session`) and DO NOT
@@ -16,10 +21,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ChainEntity, ChainFindingRelation, ChainLinkerRun
+from app.services.chain_dto import (
+    entities_to_list,
+    entity_to_dict,
+    linker_run_to_dict,
+    relations_to_list,
+)
 from app.services.chain_store_factory import chain_store_from_session
 
 
@@ -47,6 +58,10 @@ class ChainService:
     fresh store around the caller-supplied session. This matches the
     original ChainService contract (stateless) while routing every
     call through the protocol-conformant backend.
+
+    Read methods return plain dicts (produced by
+    :mod:`app.services.chain_dto`) rather than ORM rows so there is
+    no SQLModel coupling leaking up into the route handlers.
     """
 
     # ── Entity queries ───────────────────────────────────────────────
@@ -59,33 +74,17 @@ class ChainService:
         type_: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[ChainEntity]:
-        """List entities for a user, optionally filtered by type.
-
-        Returns web SQLModel ``ChainEntity`` rows — the route serializer
-        expects these shapes. We run the raw ORM select here instead of
-        going through :meth:`PostgresChainStore.list_entities` (which
-        returns domain ``Entity`` objects) so the route code keeps its
-        existing field access without a DTO reshape.
-        """
-        from sqlalchemy import select
-
+    ) -> list[dict[str, Any]]:
+        """List entities for a user, optionally filtered by type."""
         store = chain_store_from_session(session)
         await store.initialize()
-
-        # Use an ORM select to keep ChainEntity row shapes for the
-        # route. The store's list_entities returns domain objects;
-        # here we need ORM rows with the web table columns intact.
-        stmt = select(ChainEntity).where(ChainEntity.user_id == user_id)
-        if type_ is not None:
-            stmt = stmt.where(ChainEntity.type == type_)
-        stmt = (
-            stmt.order_by(ChainEntity.mention_count.desc())
-            .offset(offset)
-            .limit(limit)
+        entities = await store.list_entities(
+            user_id=user_id,
+            entity_type=type_,
+            limit=limit,
+            offset=offset,
         )
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        return entities_to_list(entities)
 
     async def get_entity(
         self,
@@ -93,19 +92,12 @@ class ChainService:
         *,
         user_id: uuid.UUID,
         entity_id: str,
-    ) -> ChainEntity | None:
+    ) -> dict[str, Any] | None:
         """Fetch a single entity by id, scoped to the user."""
-        from sqlalchemy import select
-
         store = chain_store_from_session(session)
         await store.initialize()
-        # Use ORM select so the route gets the web SQLModel row.
-        stmt = select(ChainEntity).where(
-            ChainEntity.user_id == user_id,
-            ChainEntity.id == entity_id,
-        )
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
+        entity = await store.get_entity(entity_id, user_id=user_id)
+        return entity_to_dict(entity) if entity is not None else None
 
     async def relations_for_finding(
         self,
@@ -113,19 +105,14 @@ class ChainService:
         *,
         user_id: uuid.UUID,
         finding_id: str,
-    ) -> list[ChainFindingRelation]:
+    ) -> list[dict[str, Any]]:
         """Fetch all relations touching ``finding_id`` (source or target)."""
-        from sqlalchemy import select
-
         store = chain_store_from_session(session)
         await store.initialize()
-        stmt = select(ChainFindingRelation).where(
-            ChainFindingRelation.user_id == user_id,
-            (ChainFindingRelation.source_finding_id == finding_id)
-            | (ChainFindingRelation.target_finding_id == finding_id),
+        relations = await store.relations_for_finding(
+            finding_id, user_id=user_id
         )
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        return relations_to_list(relations)
 
     # ── Query engine ─────────────────────────────────────────────────
 
@@ -214,21 +201,20 @@ class ChainService:
         *,
         user_id: uuid.UUID,
         engagement_id: str | None,
-    ) -> ChainLinkerRun:
+    ) -> dict[str, Any]:
         """Create a linker run in the 'pending' state via the store protocol.
 
         Delegates to :meth:`PostgresChainStore.start_linker_run` which
         generates the run id, picks the next generation, and commits.
-        Returns the web SQLModel ``ChainLinkerRun`` row so the route
-        can read ``run.id`` / ``run.status_text`` without a DTO hop.
+        Returns a DTO dict (with ``id``, ``status``, ``status_text``,
+        etc.) so the route keeps reading the same field names it did
+        when this method handed back an ORM row.
         """
-        from sqlalchemy import select
-
         from opentools.chain.types import LinkerMode, LinkerScope
 
         store = chain_store_from_session(session)
         await store.initialize()
-        run_domain = await store.start_linker_run(
+        run = await store.start_linker_run(
             scope=(
                 LinkerScope.ENGAGEMENT
                 if engagement_id
@@ -238,13 +224,7 @@ class ChainService:
             mode=LinkerMode.RULES_ONLY,
             user_id=user_id,
         )
-        # Pull the ORM row back so the route gets the web shape.
-        stmt = select(ChainLinkerRun).where(
-            ChainLinkerRun.id == run_domain.id,
-            ChainLinkerRun.user_id == user_id,
-        )
-        result = await session.execute(stmt)
-        return result.scalar_one()
+        return linker_run_to_dict(run)
 
     # Back-compat alias matching the original route expectation.
     create_linker_run_stub = create_linker_run_pending
@@ -255,20 +235,19 @@ class ChainService:
         *,
         user_id: uuid.UUID,
         run_id: str,
-    ) -> ChainLinkerRun | None:
+    ) -> dict[str, Any] | None:
         """Fetch one linker run by id, scoped to the user.
 
-        The protocol exposes ``fetch_linker_runs(limit=...)`` but not a
-        point-lookup; we use a direct ORM select here to avoid loading
-        the full history just to find one row.
+        The protocol exposes ``fetch_linker_runs(limit=...)`` for the
+        history list but not a point-lookup. We pull the most recent
+        ``limit=1000`` runs for the user and scan for ``run_id``; in
+        practice the linker-run history is small (and the route is
+        only hit interactively to poll one run), so the scan is fine.
         """
-        from sqlalchemy import select
-
         store = chain_store_from_session(session)
         await store.initialize()
-        stmt = select(ChainLinkerRun).where(
-            ChainLinkerRun.user_id == user_id,
-            ChainLinkerRun.id == run_id,
-        )
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
+        runs = await store.fetch_linker_runs(user_id=user_id, limit=1000)
+        for r in runs:
+            if r.id == run_id:
+                return linker_run_to_dict(r)
+        return None
