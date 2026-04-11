@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import async_session_factory
 from app.dependencies import get_db, get_current_user, chain_task_registry_dep
 from app.models import User
-from app.services import chain_rebuild
+from app.services.chain_rebuild_worker import run_rebuild_shared
 from app.services.chain_service import (
     ChainPathResultDTO,
     ChainQueryPathRequest,
@@ -169,7 +169,7 @@ async def query_path(
         max_hops=request.max_hops,
         include_candidates=request.include_candidates,
     )
-    results = await service.k_shortest_paths_stub(db, user_id=user.id, request=req)
+    results = await service.k_shortest_paths(db, user_id=user.id, request=req)
     return PathResponse(
         paths=[
             {
@@ -192,16 +192,20 @@ async def rebuild_chain(
     service: ChainService = Depends(get_chain_service),
     registry: ChainTaskRegistry = Depends(chain_task_registry_dep),
 ) -> RebuildResponse:
-    """Start a background rebuild task.
+    """Start a background rebuild task via the shared pipeline.
 
-    Creates a ChainLinkerRun row in pending state, launches an asyncio.Task
-    through the ChainTaskRegistry, and returns the run_id immediately.
-    The task updates the row as it progresses: pending -> running -> done/failed.
+    Creates a ChainLinkerRun row in pending state (through the
+    ``PostgresChainStore.start_linker_run`` protocol method), launches
+    an ``asyncio.Task`` through the ChainTaskRegistry, and returns
+    the run_id immediately. The task updates the row as it
+    progresses: pending -> running -> done/failed.
 
-    The background worker is an intentional subset of the full CLI pipeline
-    (see app.services.chain_rebuild for scope documentation).
+    The background worker uses the shared CLI
+    :class:`ExtractionPipeline` + :class:`LinkerEngine` instead of the
+    old web-specific subset, so all 6 default linker rules (not just
+    shared-strong-entity) are applied.
     """
-    run = await service.create_linker_run_stub(
+    run = await service.create_linker_run_pending(
         db, user_id=user.id, engagement_id=request.engagement_id,
     )
 
@@ -211,7 +215,7 @@ async def rebuild_chain(
 
     registry.start(
         run.id,
-        chain_rebuild.run_rebuild(
+        run_rebuild_shared(
             session_factory=session_factory,
             run_id=run.id,
             user_id=user.id,

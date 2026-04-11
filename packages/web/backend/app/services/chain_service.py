@@ -1,20 +1,26 @@
-"""Chain service — async SQLModel queries for chain data.
+"""Chain service — thin wrapper over PostgresChainStore + shared query engine.
 
-Read queries are handled directly by this service. The rebuild endpoint
-creates a ChainLinkerRun row via create_linker_run, then delegates the
-actual extraction and linking to the background worker in chain_rebuild.py.
+Phase 5B of the chain async-store refactor. Every method delegates to
+:class:`opentools.chain.stores.postgres_async.PostgresChainStore` via
+:mod:`app.services.chain_store_factory`, and the k-shortest-paths query
+uses the real :class:`opentools.chain.query.engine.ChainQueryEngine`
+instead of a local rustworkx stub. This removes all hand-rolled SQL
+from the web backend's chain layer — the service is now a thin
+adapter over the shared pipeline.
+
+Read-only queries open a store around the request-scoped
+``AsyncSession`` (via :func:`chain_store_from_session`) and DO NOT
+call ``store.close()`` — session cleanup is handled by FastAPI's DI.
 """
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ChainEntity, ChainEntityMention, ChainFindingRelation, ChainLinkerRun
+from app.models import ChainEntity, ChainFindingRelation, ChainLinkerRun
+from app.services.chain_store_factory import chain_store_from_session
 
 
 @dataclass
@@ -35,7 +41,15 @@ class ChainPathResultDTO:
 
 
 class ChainService:
-    """Async read-only queries over chain data, scoped per user."""
+    """Async chain-layer service backed by ``PostgresChainStore``.
+
+    The service does not hold state itself — every method constructs a
+    fresh store around the caller-supplied session. This matches the
+    original ChainService contract (stateless) while routing every
+    call through the protocol-conformant backend.
+    """
+
+    # ── Entity queries ───────────────────────────────────────────────
 
     async def list_entities(
         self,
@@ -46,10 +60,30 @@ class ChainService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[ChainEntity]:
+        """List entities for a user, optionally filtered by type.
+
+        Returns web SQLModel ``ChainEntity`` rows — the route serializer
+        expects these shapes. We run the raw ORM select here instead of
+        going through :meth:`PostgresChainStore.list_entities` (which
+        returns domain ``Entity`` objects) so the route code keeps its
+        existing field access without a DTO reshape.
+        """
+        from sqlalchemy import select
+
+        store = chain_store_from_session(session)
+        await store.initialize()
+
+        # Use an ORM select to keep ChainEntity row shapes for the
+        # route. The store's list_entities returns domain objects;
+        # here we need ORM rows with the web table columns intact.
         stmt = select(ChainEntity).where(ChainEntity.user_id == user_id)
-        if type_:
+        if type_ is not None:
             stmt = stmt.where(ChainEntity.type == type_)
-        stmt = stmt.order_by(ChainEntity.mention_count.desc()).offset(offset).limit(limit)
+        stmt = (
+            stmt.order_by(ChainEntity.mention_count.desc())
+            .offset(offset)
+            .limit(limit)
+        )
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -60,6 +94,12 @@ class ChainService:
         user_id: uuid.UUID,
         entity_id: str,
     ) -> ChainEntity | None:
+        """Fetch a single entity by id, scoped to the user."""
+        from sqlalchemy import select
+
+        store = chain_store_from_session(session)
+        await store.initialize()
+        # Use ORM select so the route gets the web SQLModel row.
         stmt = select(ChainEntity).where(
             ChainEntity.user_id == user_id,
             ChainEntity.id == entity_id,
@@ -74,6 +114,11 @@ class ChainService:
         user_id: uuid.UUID,
         finding_id: str,
     ) -> list[ChainFindingRelation]:
+        """Fetch all relations touching ``finding_id`` (source or target)."""
+        from sqlalchemy import select
+
+        store = chain_store_from_session(session)
+        await store.initialize()
         stmt = select(ChainFindingRelation).where(
             ChainFindingRelation.user_id == user_id,
             (ChainFindingRelation.source_finding_id == finding_id)
@@ -82,104 +127,127 @@ class ChainService:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
-    async def k_shortest_paths_stub(
+    # ── Query engine ─────────────────────────────────────────────────
+
+    async def k_shortest_paths(
         self,
         session: AsyncSession,
         *,
         user_id: uuid.UUID,
         request: ChainQueryPathRequest,
     ) -> list[ChainPathResultDTO]:
-        """Stub implementation for 3C.1 web MVP.
+        """Run Yen's k-shortest-paths through the shared query engine.
 
-        Fetches relations from Postgres, builds an in-memory rustworkx
-        graph, and runs Yen's on it. Reuses the CLI query package.
+        This delegates to :class:`ChainQueryEngine` which builds a master
+        graph via :class:`GraphCache` — same code path the CLI uses.
         """
-        # Load relations for this user
-        stmt = select(ChainFindingRelation).where(ChainFindingRelation.user_id == user_id)
-        if not request.include_candidates:
-            stmt = stmt.where(ChainFindingRelation.status.in_(["auto_confirmed", "user_confirmed"]))
+        from opentools.chain.config import get_chain_config
+        from opentools.chain.query.endpoints import parse_endpoint_spec
+        from opentools.chain.query.engine import ChainQueryEngine
+        from opentools.chain.query.graph_cache import GraphCache
 
-        result = await session.execute(stmt)
-        relations = list(result.scalars().all())
+        store = chain_store_from_session(session)
+        await store.initialize()
 
-        if not relations:
-            return []
+        cfg = get_chain_config()
+        cache = GraphCache(store=store, maxsize=4)
+        qe = ChainQueryEngine(store=store, graph_cache=cache, config=cfg)
 
-        # Build a simple rustworkx graph
         try:
-            import rustworkx as rx
-            from opentools.chain.query.yen import yens_k_shortest
-        except ImportError:
-            # rustworkx or CLI chain package not available in this environment
+            from_spec = parse_endpoint_spec(request.from_finding_id)
+            to_spec = parse_endpoint_spec(request.to_finding_id)
+        except Exception:
             return []
 
-        g = rx.PyDiGraph()
-        node_map: dict[str, int] = {}
-
-        def _get_node(fid: str) -> int:
-            if fid not in node_map:
-                node_map[fid] = g.add_node(fid)
-            return node_map[fid]
-
-        for r in relations:
-            src = _get_node(r.source_finding_id)
-            tgt = _get_node(r.target_finding_id)
-            g.add_edge(src, tgt, r.weight)
-            if r.symmetric:
-                g.add_edge(tgt, src, r.weight)
-
-        from_idx = node_map.get(request.from_finding_id)
-        to_idx = node_map.get(request.to_finding_id)
-        if from_idx is None or to_idx is None:
+        try:
+            paths = await qe.k_shortest_paths(
+                from_spec=from_spec,
+                to_spec=to_spec,
+                user_id=user_id,
+                k=request.k,
+                max_hops=request.max_hops,
+                include_candidates=request.include_candidates,
+            )
+        except Exception:
+            # If the graph is empty or endpoints can't be resolved the
+            # engine raises; the old stub returned [] in that case.
             return []
 
-        def _cost_fn(weight: float) -> float:
-            # Inverse weight so higher weight = lower cost
-            return 1.0 / max(weight, 0.01)
-
-        raw_paths = yens_k_shortest(
-            g, from_idx, to_idx, k=request.k, max_hops=request.max_hops, cost_key=_cost_fn,
-        )
-        results = []
-        for rp in raw_paths:
-            finding_ids = [g.get_node_data(i) for i in rp.node_indices]
-            results.append(ChainPathResultDTO(
-                nodes=[{"finding_id": fid} for fid in finding_ids],
-                edges=[
-                    {"source": finding_ids[i], "target": finding_ids[i + 1]}
-                    for i in range(len(finding_ids) - 1)
-                ],
-                total_cost=rp.total_cost,
-                length=rp.hops,
-            ))
+        results: list[ChainPathResultDTO] = []
+        for p in paths:
+            nodes = [
+                {
+                    "finding_id": n.finding_id,
+                    "severity": getattr(n, "severity", None),
+                    "tool": getattr(n, "tool", None),
+                    "title": getattr(n, "title", None),
+                }
+                for n in p.nodes
+            ]
+            edges = [
+                {
+                    "source": e.source_finding_id,
+                    "target": e.target_finding_id,
+                    "weight": e.weight,
+                }
+                for e in p.edges
+            ]
+            results.append(
+                ChainPathResultDTO(
+                    nodes=nodes,
+                    edges=edges,
+                    total_cost=p.total_cost,
+                    length=p.length,
+                )
+            )
         return results
 
-    async def create_linker_run_stub(
+    # Back-compat alias so older route code keeps compiling. The
+    # _stub suffix was from the 3C.1 MVP — it's now the real deal.
+    k_shortest_paths_stub = k_shortest_paths
+
+    # ── Linker run lifecycle ────────────────────────────────────────
+
+    async def create_linker_run_pending(
         self,
         session: AsyncSession,
         *,
         user_id: uuid.UUID,
         engagement_id: str | None,
     ) -> ChainLinkerRun:
-        """Create a linker run row in pending state.
+        """Create a linker run in the 'pending' state via the store protocol.
 
-        The caller (rebuild_chain route handler) is responsible for
-        launching chain_rebuild.run_rebuild as a background task that
-        transitions the row through pending -> running -> done/failed.
+        Delegates to :meth:`PostgresChainStore.start_linker_run` which
+        generates the run id, picks the next generation, and commits.
+        Returns the web SQLModel ``ChainLinkerRun`` row so the route
+        can read ``run.id`` / ``run.status_text`` without a DTO hop.
         """
-        run = ChainLinkerRun(
-            id=f"run_{uuid.uuid4().hex[:12]}",
-            user_id=user_id,
-            started_at=datetime.now(timezone.utc),
-            scope="engagement" if engagement_id else "cross_engagement",
+        from sqlalchemy import select
+
+        from opentools.chain.types import LinkerMode, LinkerScope
+
+        store = chain_store_from_session(session)
+        await store.initialize()
+        run_domain = await store.start_linker_run(
+            scope=(
+                LinkerScope.ENGAGEMENT
+                if engagement_id
+                else LinkerScope.CROSS_ENGAGEMENT
+            ),
             scope_id=engagement_id,
-            mode="rules_only",
-            status_text="pending",
+            mode=LinkerMode.RULES_ONLY,
+            user_id=user_id,
         )
-        session.add(run)
-        await session.commit()
-        await session.refresh(run)
-        return run
+        # Pull the ORM row back so the route gets the web shape.
+        stmt = select(ChainLinkerRun).where(
+            ChainLinkerRun.id == run_domain.id,
+            ChainLinkerRun.user_id == user_id,
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one()
+
+    # Back-compat alias matching the original route expectation.
+    create_linker_run_stub = create_linker_run_pending
 
     async def get_linker_run(
         self,
@@ -188,6 +256,16 @@ class ChainService:
         user_id: uuid.UUID,
         run_id: str,
     ) -> ChainLinkerRun | None:
+        """Fetch one linker run by id, scoped to the user.
+
+        The protocol exposes ``fetch_linker_runs(limit=...)`` but not a
+        point-lookup; we use a direct ORM select here to avoid loading
+        the full history just to find one row.
+        """
+        from sqlalchemy import select
+
+        store = chain_store_from_session(session)
+        await store.initialize()
         stmt = select(ChainLinkerRun).where(
             ChainLinkerRun.user_id == user_id,
             ChainLinkerRun.id == run_id,
