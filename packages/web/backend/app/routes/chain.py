@@ -8,14 +8,27 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import async_session_factory
 from app.dependencies import get_db, get_current_user, chain_task_registry_dep
 from app.models import User
+from app.services import chain_rebuild
 from app.services.chain_service import (
     ChainPathResultDTO,
     ChainQueryPathRequest,
     ChainService,
 )
 from app.services.chain_tasks import ChainTaskRegistry
+
+
+def _get_session_factory():
+    """Return the async session factory for use by background tasks.
+
+    Background tasks must NOT reuse the request-scoped session — it will be
+    closed by the time the task coroutine runs. This factory creates fresh
+    sessions that support ``async with session_factory() as session: ...``
+    usage.
+    """
+    return async_session_factory
 
 router = APIRouter(prefix="/api/chain", tags=["chain"])
 
@@ -181,14 +194,31 @@ async def rebuild_chain(
 ) -> RebuildResponse:
     """Start a background rebuild task.
 
-    For 3C.1 MVP this creates a LinkerRun row in pending state and
-    returns the run_id. Actual extraction/linking via the CLI package
-    is deferred to a follow-up implementation task. The run stays at
-    status=pending until a worker processes it.
+    Creates a ChainLinkerRun row in pending state, launches an asyncio.Task
+    through the ChainTaskRegistry, and returns the run_id immediately.
+    The task updates the row as it progresses: pending -> running -> done/failed.
+
+    The background worker is an intentional subset of the full CLI pipeline
+    (see app.services.chain_rebuild for scope documentation).
     """
     run = await service.create_linker_run_stub(
         db, user_id=user.id, engagement_id=request.engagement_id,
     )
+
+    # Launch the background task. The factory passed must open NEW sessions —
+    # the request-scoped session will be closed by the time the task actually runs.
+    session_factory = _get_session_factory()
+
+    registry.start(
+        run.id,
+        chain_rebuild.run_rebuild(
+            session_factory=session_factory,
+            run_id=run.id,
+            user_id=user.id,
+            engagement_id=request.engagement_id,
+        ),
+    )
+
     return RebuildResponse(run_id=run.id, status=run.status_text or "pending")
 
 

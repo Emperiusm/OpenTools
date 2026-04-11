@@ -45,6 +45,16 @@ async def client():
 
 
 @pytest.fixture
+def test_session_factory_fixture():
+    """Provide the test session factory as a pytest fixture.
+
+    Tests that need to call ``async with session_factory() as session: ...``
+    directly (e.g. the chain rebuild worker tests) should use this fixture.
+    """
+    return test_session_factory
+
+
+@pytest.fixture
 async def auth_client(client):
     """Client that's registered and logged in."""
     # Register
