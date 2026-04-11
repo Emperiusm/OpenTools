@@ -62,6 +62,12 @@ async def merge_entities(
         )
 
     async with store.batch_transaction():
+        # Capture the list of findings that mention the source entity
+        # BEFORE rewriting mentions — after the rewrite, the source
+        # entity has no mentions and the query would return [].
+        affected = await store.fetch_finding_ids_for_entity(
+            source_id, user_id=user_id,
+        )
         mentions_rewritten = await store.rewrite_mentions_entity_id(
             from_entity_id=source_id,
             to_entity_id=target_id,
@@ -70,16 +76,11 @@ async def merge_entities(
         await store.delete_entity(source_id, user_id=user_id)
         await store.recompute_mention_counts([target_id], user_id=user_id)
 
-    # NOTE: affected_findings is not populated because the protocol's
-    # fetch_mentions_with_engagement returns only (mention_id, engagement_id),
-    # not finding_id, and there is no "distinct findings for entity" helper.
-    # Tests do not assert on this field. If future callers need it, add a
-    # protocol method or extend fetch_mentions_with_engagement.
     return MergeResult(
         merged_from_id=source_id,
         merged_into_id=target_id,
         mentions_rewritten=mentions_rewritten,
-        affected_findings=[],
+        affected_findings=sorted(affected),
     )
 
 

@@ -34,8 +34,9 @@ EXPECTED_METHODS = {
     # Linker-specific queries (5)
     "fetch_candidate_partners", "fetch_findings_by_ids",
     "count_findings_in_scope", "compute_avg_idf", "entities_for_finding",
-    # LinkerRun lifecycle (5)
+    # LinkerRun lifecycle (6)
     "start_linker_run", "set_run_status", "finish_linker_run",
+    "mark_run_failed",
     "current_linker_generation", "fetch_linker_runs",
     # Extraction state + parser output (3)
     "get_extraction_hash", "upsert_extraction_state", "get_parser_output",
@@ -53,8 +54,11 @@ def test_protocol_has_all_expected_methods():
     # fetch_all_finding_ids for the exporter's "all engagements" path,
     # bringing the total to 42. Task 26 added fetch_finding_ids_for_entity
     # and fetch_entity_mentions_for_engagement for the async query stack,
-    # bringing the total to 44.
-    assert len(EXPECTED_METHODS) == 44
+    # bringing the total to 44. Phase 3C.1.5 follow-up: added
+    # mark_run_failed so worker failure handlers can finalize a run row
+    # through the protocol instead of a direct SQL UPDATE, bringing the
+    # total to 45.
+    assert len(EXPECTED_METHODS) == 45
     methods = _protocol_methods()
     missing = EXPECTED_METHODS - methods
     extra = methods - EXPECTED_METHODS

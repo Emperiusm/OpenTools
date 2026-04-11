@@ -276,3 +276,44 @@ class ChainLlmLinkCache(SQLModel, table=True):
     user_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="user.id", index=True, nullable=True
     )
+
+
+class ChainFindingExtractionState(SQLModel, table=True):
+    """Change detection for re-extraction (mirrors CLI finding_extraction_state).
+
+    Stores the latest extraction input hash and extractor set seen per
+    finding so the pipeline can skip findings whose inputs have not
+    changed. User-scoped via nullable FK (spec G37).
+    """
+    __tablename__ = "chain_finding_extraction_state"
+    finding_id: str = Field(
+        primary_key=True, foreign_key="finding.id"
+    )
+    extraction_input_hash: str
+    last_extracted_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    last_extractor_set_json: bytes
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )
+
+
+class ChainFindingParserOutput(SQLModel, table=True):
+    """Structured parser output, keyed on (finding_id, parser_name).
+
+    Feeds parser-aware extractors that consume already-parsed tool
+    output rather than re-parsing raw finding descriptions.
+    """
+    __tablename__ = "chain_finding_parser_output"
+    finding_id: str = Field(
+        primary_key=True, foreign_key="finding.id"
+    )
+    parser_name: str = Field(primary_key=True)
+    data_json: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )

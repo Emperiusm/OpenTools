@@ -252,6 +252,24 @@ class ChainStoreProtocol(Protocol):
         user_id: UUID | None,
     ) -> None: ...
 
+    async def mark_run_failed(
+        self,
+        run_id: str,
+        *,
+        error: str,
+        user_id: UUID | None,
+    ) -> None:
+        """Mark a linker run as failed and record the error message.
+
+        Sets ``status_text='failed'``, ``error=<message>``, and
+        ``finished_at=<now>``. Used by worker failure handlers to
+        finalize a run row without going through ``finish_linker_run``
+        (which expects a full set of counters for the success path).
+
+        No-op if the run id doesn't exist; does not raise.
+        """
+        ...
+
     async def current_linker_generation(
         self, *, user_id: UUID | None
     ) -> int: ...

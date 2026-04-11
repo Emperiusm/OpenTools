@@ -164,25 +164,17 @@ async def run_rebuild_shared(
         )
         try:
             async with session_factory() as fail_session:
-                from app.models import ChainLinkerRun
-                from datetime import datetime, timezone
-
-                # Update status + error via a direct UPDATE — the
-                # protocol's finish_linker_run path assumes a clean
-                # success finalize, so we drop straight to SQL here.
-                from sqlalchemy import update
-
-                await fail_session.execute(
-                    update(ChainLinkerRun)
-                    .where(
-                        ChainLinkerRun.id == run_id,
-                        ChainLinkerRun.user_id == user_id,
-                    )
-                    .values(
-                        status_text="failed",
-                        finished_at=datetime.now(timezone.utc),
-                        error=str(exc)[:2000],
-                    )
+                # Route the failure finalize through the protocol
+                # instead of a direct SQL UPDATE. mark_run_failed was
+                # added specifically for worker-style error handlers:
+                # finish_linker_run expects a clean success with full
+                # counters, which we don't have here.
+                fail_store = PostgresChainStore(session=fail_session)
+                await fail_store.initialize()
+                await fail_store.mark_run_failed(
+                    run_id,
+                    error=str(exc)[:2000],
+                    user_id=user_id,
                 )
                 await fail_session.commit()
         except Exception:

@@ -1017,6 +1017,33 @@ class AsyncChainStore:
             await self._conn.commit()
 
     @require_initialized
+    async def mark_run_failed(
+        self, run_id: str, *, error: str, user_id
+    ) -> None:
+        """Mark a linker run as failed in a single UPDATE.
+
+        Writes status_text='failed', error, finished_at=<now>. This is
+        the worker failure-path finalize — finish_linker_run assumes a
+        clean success with full counters, so we skip it here. The CLI
+        backend is single-user so user_id is accepted but ignored for
+        the WHERE clause (matches set_run_status).
+        """
+        from datetime import datetime as _dt, timezone as _tz
+
+        await self._conn.execute(
+            """
+            UPDATE linker_run
+            SET status_text = ?,
+                error = ?,
+                finished_at = ?
+            WHERE id = ?
+            """,
+            ("failed", error, _dt.now(_tz.utc).isoformat(), run_id),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
     async def current_linker_generation(self, *, user_id) -> int:
         async with self._conn.execute(
             "SELECT COALESCE(MAX(generation), 0) FROM linker_run"

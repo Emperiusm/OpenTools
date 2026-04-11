@@ -1229,6 +1229,33 @@ class PostgresChainStore:
 
     @require_initialized
     @require_user_scope
+    async def mark_run_failed(
+        self, run_id: str, *, error: str, user_id: UUID
+    ) -> None:
+        """Finalize a linker run row with failed status.
+
+        Worker failure path — the protocol's finish_linker_run path
+        assumes a clean success with full counters, so we drop straight
+        to a single UPDATE here.
+        """
+        M = self._models
+        assert self._session is not None
+        await self._session.execute(
+            update(M.ChainLinkerRun)
+            .where(
+                M.ChainLinkerRun.id == run_id,
+                M.ChainLinkerRun.user_id == user_id,
+            )
+            .values(
+                status_text="failed",
+                error=error,
+                finished_at=datetime.now(timezone.utc),
+            )
+        )
+        await self._autocommit()
+
+    @require_initialized
+    @require_user_scope
     async def current_linker_generation(self, *, user_id: UUID) -> int:
         M = self._models
         assert self._session is not None
@@ -1256,19 +1283,29 @@ class PostgresChainStore:
 
     # ─── Extraction state + parser output ────────────────────────────────
     #
-    # The web schema doesn't define finding_extraction_state or
-    # finding_parser_output tables yet — these are CLI-only concepts the
-    # web backend will pick up in a future phase. Until they exist we
-    # return empty values so the protocol conformance tests still pass.
-    # Matches spec §4.3: "methods may return empty collections on the
-    # Postgres backend when the underlying table is not yet migrated".
+    # Backed by the chain_finding_extraction_state and
+    # chain_finding_parser_output web tables (Alembic migration 005).
+    # Mirrors AsyncChainStore's semantics: upsert_extraction_state is
+    # a dialect-aware INSERT ... ON CONFLICT DO UPDATE that replaces
+    # the row's hash + extractor set; get_extraction_hash returns just
+    # the hash; get_parser_output returns all parser output rows for a
+    # finding as FindingParserOutput domain objects with the JSON
+    # payload decoded via orjson.
 
     @require_initialized
     @require_user_scope
     async def get_extraction_hash(
         self, finding_id: str, *, user_id: UUID
     ) -> str | None:
-        return None
+        M = self._models
+        assert self._session is not None
+        stmt = select(M.ChainFindingExtractionState.extraction_input_hash).where(
+            M.ChainFindingExtractionState.finding_id == finding_id,
+            M.ChainFindingExtractionState.user_id == user_id,
+        )
+        result = await self._session.execute(stmt)
+        row = result.first()
+        return row[0] if row else None
 
     @require_initialized
     @require_user_scope
@@ -1280,15 +1317,59 @@ class PostgresChainStore:
         extractor_set: list[str],
         user_id: UUID,
     ) -> None:
-        # No-op on Postgres until finding_extraction_state is migrated.
-        return None
+        M = self._models
+        assert self._session is not None
+        ins = _insert_for(self._session)
+        extractor_blob = orjson.dumps(list(extractor_set))
+        now = datetime.now(timezone.utc)
+        stmt = ins(M.ChainFindingExtractionState).values(
+            finding_id=finding_id,
+            extraction_input_hash=extraction_input_hash,
+            last_extracted_at=now,
+            last_extractor_set_json=extractor_blob,
+            user_id=user_id,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[M.ChainFindingExtractionState.finding_id],
+            set_={
+                "extraction_input_hash": extraction_input_hash,
+                "last_extracted_at": now,
+                "last_extractor_set_json": extractor_blob,
+                "user_id": user_id,
+            },
+        )
+        await self._session.execute(stmt)
+        await self._autocommit()
 
     @require_initialized
     @require_user_scope
     async def get_parser_output(
         self, finding_id: str, *, user_id: UUID
     ) -> list[FindingParserOutput]:
-        return []
+        M = self._models
+        assert self._session is not None
+        stmt = select(M.ChainFindingParserOutput).where(
+            M.ChainFindingParserOutput.finding_id == finding_id,
+            M.ChainFindingParserOutput.user_id == user_id,
+        )
+        result = await self._session.execute(stmt)
+        rows = result.scalars().all()
+
+        outputs: list[FindingParserOutput] = []
+        for row in rows:
+            data = _coerce_json_bytes(row.data_json)
+            if not isinstance(data, dict):
+                data = {}
+            outputs.append(
+                FindingParserOutput(
+                    finding_id=row.finding_id,
+                    parser_name=row.parser_name,
+                    data=data,
+                    created_at=row.created_at,
+                    user_id=row.user_id,
+                )
+            )
+        return outputs
 
     # ─── LLM caches ──────────────────────────────────────────────────────
 

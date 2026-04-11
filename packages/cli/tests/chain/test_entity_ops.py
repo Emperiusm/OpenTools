@@ -47,10 +47,39 @@ async def test_merge_two_host_entities(engagement_store_and_chain):
     assert result.merged_from_id == id_5
     assert result.merged_into_id == id_6
     assert result.mentions_rewritten >= 1
+    # affected_findings should list the (distinct) findings that had a
+    # mention of the merged-from entity. Both IPs share finding "m_a",
+    # so merging id_5 into id_6 reports exactly that finding.
+    assert result.affected_findings == ["m_a"]
     # Source entity no longer exists
     assert await chain_store.get_entity(id_5, user_id=None) is None
     # Target still exists
     assert await chain_store.get_entity(id_6, user_id=None) is not None
+
+
+async def test_merge_affected_findings_spans_multiple_findings(
+    engagement_store_and_chain,
+):
+    """merge_entities.affected_findings returns distinct ids across
+    multiple findings, not just the single seeding finding."""
+    engagement_store, chain_store, _ = engagement_store_and_chain
+    f1 = _finding("m_af_1", description="SSH on 10.0.0.5 and 10.0.0.6")
+    f2 = _finding("m_af_2", description="also 10.0.0.5 and 10.0.0.6")
+    engagement_store.add_finding(f1)
+    engagement_store.add_finding(f2)
+
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
+    await pipeline.extract_for_finding(f1)
+    await pipeline.extract_for_finding(f2)
+
+    id_5 = entity_id_for("ip", "10.0.0.5")
+    id_6 = entity_id_for("ip", "10.0.0.6")
+    result = await merge_entities(
+        store=chain_store, a_id=id_5, b_id=id_6, into="b"
+    )
+    # Both findings mention 10.0.0.5 (the merged-from side). Distinct,
+    # sorted for determinism.
+    assert result.affected_findings == ["m_af_1", "m_af_2"]
 
 
 async def test_merge_into_a_reverses_direction(engagement_store_and_chain):
