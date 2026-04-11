@@ -37,9 +37,42 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@pytest_asyncio.fixture(params=["sqlite_async"])
+def _ensure_web_backend_on_path() -> None:
+    """Make sure the worktree's web backend is importable.
+
+    The root pyproject already puts ``packages/web/backend`` on
+    ``sys.path``, but we defend against test invocations from inside
+    ``packages/cli`` by falling back to an explicit insert. Loading
+    ``app.models`` before calling this is safe — the function is a
+    no-op when the module is already cached.
+    """
+    import sys
+    import pathlib
+
+    # Walk upward from this file to the repo root (contains
+    # ``packages/web/backend``). Stop at filesystem root.
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "packages" / "web" / "backend"
+        if candidate.is_dir():
+            candidate_str = str(candidate)
+            if candidate_str not in sys.path:
+                sys.path.insert(0, candidate_str)
+            return
+
+
+@pytest_asyncio.fixture(params=["sqlite_async", "postgres_async"])
 async def conformant_store(request, tmp_path):
-    """Yield (store, user_id) for the parameterized backend."""
+    """Yield (store, user_id) for the parameterized backend.
+
+    The sqlite_async path uses the CLI's single-user aiosqlite store
+    and yields ``user_id=None`` (CLI semantics). The postgres_async
+    path uses PostgresChainStore against a ``sqlite+aiosqlite://`` ORM
+    session — this catches dialect-independent ORM bugs even without
+    a running Postgres container. Real Postgres coverage is gated on
+    the WEB_TEST_DB_URL env var in a separate suite (not activated
+    here).
+    """
     if request.param == "sqlite_async":
         from opentools.chain.stores.sqlite_async import AsyncChainStore
         store = AsyncChainStore(db_path=tmp_path / f"{request.param}.db")
@@ -48,8 +81,77 @@ async def conformant_store(request, tmp_path):
             yield store, None
         finally:
             await store.close()
-    else:
-        pytest.skip(f"backend {request.param} not available in this phase")
+        return
+
+    if request.param == "postgres_async":
+        import uuid as _uuid
+
+        _ensure_web_backend_on_path()
+
+        try:
+            import app.models as web_models  # type: ignore[import-not-found]
+        except Exception as exc:  # pragma: no cover
+            pytest.skip(f"web backend models unavailable: {exc}")
+
+        # Verify that the loaded app.models has the chain cache tables
+        # this test needs. If it does not (stale editable install from
+        # a different worktree), skip rather than silently testing the
+        # wrong schema.
+        if not hasattr(web_models, "ChainExtractionCache"):
+            pytest.skip(
+                "loaded app.models is missing ChainExtractionCache — "
+                "likely a stale editable install; run 'pip install -e "
+                "packages/web/backend' from the worktree to refresh"
+            )
+
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from opentools.chain.stores.postgres_async import PostgresChainStore
+
+        db_file = tmp_path / "postgres_conf.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_file}", echo=False
+        )
+
+        async with engine.begin() as conn:
+            await conn.run_sync(web_models.SQLModel.metadata.create_all)
+
+        Session = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        session = Session()
+
+        # Seed a user row so foreign keys that reference user.id hold.
+        user_id = _uuid.uuid4()
+        session.add(
+            web_models.User(
+                id=user_id,
+                email=f"u_{user_id.hex[:8]}@example.com",
+                hashed_password="x",
+            )
+        )
+        await session.commit()
+
+        store = PostgresChainStore(session=session)
+        await store.initialize()
+        try:
+            yield store, user_id
+        finally:
+            try:
+                await store.close()
+            finally:
+                try:
+                    await session.rollback()
+                finally:
+                    await session.close()
+                    await engine.dispose()
+        return
+
+    pytest.skip(f"backend {request.param} not available in this phase")
 
 
 # --- Lifecycle ---
@@ -246,6 +348,17 @@ async def test_current_linker_generation_monotone(conformant_store):
 @pytest.mark.asyncio
 async def test_upsert_and_get_extraction_hash(conformant_store):
     store, user_id = conformant_store
+    # The extraction_state table is CLI-only for now — the web backend
+    # has not migrated it, and PostgresChainStore's get/upsert for this
+    # table are deliberately no-ops. Skip on the postgres parameter so
+    # the conformance suite still runs on both backends without asserting
+    # CLI-only behavior.
+    if not hasattr(store, "_conn"):
+        pytest.skip(
+            "finding_extraction_state table is CLI-only; "
+            "PostgresChainStore returns no-op values until "
+            "a future web migration adds it"
+        )
     # Seed a finding row so the FK holds
     await store._conn.execute(
         "INSERT OR IGNORE INTO engagements (id, name, target, type, created_at, updated_at) "

@@ -244,3 +244,35 @@ class ChainLinkerRun(SQLModel, table=True):
     error: Optional[str] = None
     generation: int = Field(default=0)
     status_text: Optional[str] = Field(default=None)
+
+
+class ChainExtractionCache(SQLModel, table=True):
+    """LLM extraction cache entries, user-scoped (spec G37)."""
+    __tablename__ = "chain_extraction_cache"
+    cache_key: str = Field(primary_key=True)
+    provider: str
+    model: str
+    schema_version: int
+    result_json: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )
+
+
+class ChainLlmLinkCache(SQLModel, table=True):
+    """LLM link-classification cache entries, user-scoped (spec G37)."""
+    __tablename__ = "chain_llm_link_cache"
+    cache_key: str = Field(primary_key=True)
+    provider: str
+    model: str
+    schema_version: int
+    classification_json: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )
