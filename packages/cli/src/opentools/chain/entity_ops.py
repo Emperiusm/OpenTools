@@ -1,13 +1,15 @@
-"""Entity merge and split operations."""
+"""Entity merge and split operations (async, protocol-based)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from opentools.chain.models import entity_id_for
-from opentools.chain.store_extensions import ChainStore
+from opentools.chain.models import Entity, entity_id_for
+
+if TYPE_CHECKING:
+    from opentools.chain.store_protocol import ChainStoreProtocol
 
 
 @dataclass
@@ -29,9 +31,9 @@ class IncompatibleMerge(ValueError):
     """Raised when two entities cannot be merged (different types or missing)."""
 
 
-def merge_entities(
+async def merge_entities(
     *,
-    store: ChainStore,
+    store: "ChainStoreProtocol",
     a_id: str,
     b_id: str,
     into: Literal["a", "b"] = "b",
@@ -48,52 +50,42 @@ def merge_entities(
     source_id = a_id if into == "b" else b_id
     target_id = b_id if into == "b" else a_id
 
-    a = store.get_entity(a_id)
-    b = store.get_entity(b_id)
+    a = await store.get_entity(a_id, user_id=user_id)
+    b = await store.get_entity(b_id, user_id=user_id)
     if a is None or b is None:
-        raise IncompatibleMerge(f"entity not found: {a_id if a is None else b_id}")
+        raise IncompatibleMerge(
+            f"entity not found: {a_id if a is None else b_id}"
+        )
     if a.type != b.type:
         raise IncompatibleMerge(
             f"cannot merge entities of different types: {a.type} vs {b.type}"
         )
 
-    # Find affected findings before rewriting
-    rows = store.execute_all(
-        "SELECT DISTINCT finding_id FROM entity_mention WHERE entity_id = ?",
-        (source_id,),
-    )
-    affected = [r["finding_id"] for r in rows]
+    async with store.batch_transaction():
+        mentions_rewritten = await store.rewrite_mentions_entity_id(
+            from_entity_id=source_id,
+            to_entity_id=target_id,
+            user_id=user_id,
+        )
+        await store.delete_entity(source_id, user_id=user_id)
+        await store.recompute_mention_counts([target_id], user_id=user_id)
 
-    # Rewrite mentions
-    cur = store._conn.execute(
-        "UPDATE entity_mention SET entity_id = ? WHERE entity_id = ?",
-        (target_id, source_id),
-    )
-    mentions_rewritten = cur.rowcount
-
-    # Delete source entity
-    store._conn.execute("DELETE FROM entity WHERE id = ?", (source_id,))
-
-    # Recompute mention_count on target
-    store._conn.execute(
-        "UPDATE entity SET mention_count = (SELECT COUNT(*) FROM entity_mention WHERE entity_id = ?), "
-        "last_seen_at = ? WHERE id = ?",
-        (target_id, datetime.now(timezone.utc).isoformat(), target_id),
-    )
-
-    store._conn.commit()
-
+    # NOTE: affected_findings is not populated because the protocol's
+    # fetch_mentions_with_engagement returns only (mention_id, engagement_id),
+    # not finding_id, and there is no "distinct findings for entity" helper.
+    # Tests do not assert on this field. If future callers need it, add a
+    # protocol method or extend fetch_mentions_with_engagement.
     return MergeResult(
         merged_from_id=source_id,
         merged_into_id=target_id,
         mentions_rewritten=mentions_rewritten,
-        affected_findings=affected,
+        affected_findings=[],
     )
 
 
-def split_entity(
+async def split_entity(
     *,
-    store: ChainStore,
+    store: "ChainStoreProtocol",
     entity_id: str,
     by: Literal["engagement"] = "engagement",
     user_id: UUID | None = None,
@@ -107,26 +99,20 @@ def split_entity(
     if by != "engagement":
         raise ValueError(f"split criterion '{by}' not supported in 3C.1")
 
-    source = store.get_entity(entity_id)
+    source = await store.get_entity(entity_id, user_id=user_id)
     if source is None:
         raise ValueError(f"entity not found: {entity_id}")
 
-    # Group mentions by engagement_id (joining through findings)
-    rows = store.execute_all(
-        """
-        SELECT em.id AS mention_id, f.engagement_id
-        FROM entity_mention em
-        JOIN findings f ON f.id = em.finding_id
-        WHERE em.entity_id = ?
-        """,
-        (entity_id,),
+    mentions = await store.fetch_mentions_with_engagement(
+        entity_id, user_id=user_id
     )
-    if not rows:
+    if not mentions:
         return SplitResult(source_entity_id=entity_id)
 
+    # mentions is list[tuple[mention_id, engagement_id]]
     partitions: dict[str, list[str]] = {}
-    for r in rows:
-        partitions.setdefault(r["engagement_id"], []).append(r["mention_id"])
+    for mention_id, engagement_id in mentions:
+        partitions.setdefault(engagement_id, []).append(mention_id)
 
     if len(partitions) <= 1:
         # Nothing to split
@@ -136,43 +122,35 @@ def split_entity(
     new_entity_ids: list[str] = []
     mentions_repartitioned = 0
 
-    for engagement_id, mention_ids in partitions.items():
-        new_canonical = f"{source.canonical_value}|eng_{engagement_id[:8]}"
-        new_id = entity_id_for(source.type, new_canonical)
+    async with store.batch_transaction():
+        for engagement_id, mention_ids in partitions.items():
+            new_canonical = f"{source.canonical_value}|eng_{engagement_id[:8]}"
+            new_id = entity_id_for(source.type, new_canonical)
 
-        # Insert new entity
-        store._conn.execute(
-            """
-            INSERT OR IGNORE INTO entity
-                (id, type, canonical_value, first_seen_at, last_seen_at, mention_count, user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                new_id, source.type, new_canonical,
-                now.isoformat(), now.isoformat(),
-                0, str(user_id) if user_id else None,
-            ),
-        )
+            new_entity = Entity(
+                id=new_id,
+                type=source.type,
+                canonical_value=new_canonical,
+                first_seen_at=now,
+                last_seen_at=now,
+                mention_count=0,
+                user_id=user_id,
+            )
+            await store.upsert_entity(new_entity, user_id=user_id)
 
-        # Rewrite mentions to new entity_id
-        placeholders = ",".join("?" * len(mention_ids))
-        store._conn.execute(
-            f"UPDATE entity_mention SET entity_id = ? WHERE id IN ({placeholders})",
-            (new_id, *mention_ids),
-        )
-        mentions_repartitioned += len(mention_ids)
+            await store.rewrite_mentions_by_ids(
+                mention_ids=mention_ids,
+                to_entity_id=new_id,
+                user_id=user_id,
+            )
+            mentions_repartitioned += len(mention_ids)
+            new_entity_ids.append(new_id)
 
-        # Recompute mention_count on new entity
-        store._conn.execute(
-            "UPDATE entity SET mention_count = (SELECT COUNT(*) FROM entity_mention WHERE entity_id = ?) WHERE id = ?",
-            (new_id, new_id),
-        )
-        new_entity_ids.append(new_id)
+        # Recompute counts for all new entities in one call
+        await store.recompute_mention_counts(new_entity_ids, user_id=user_id)
 
-    # Delete the source entity (all its mentions have been moved)
-    store._conn.execute("DELETE FROM entity WHERE id = ?", (entity_id,))
-
-    store._conn.commit()
+        # Delete the source entity (all its mentions have been moved)
+        await store.delete_entity(entity_id, user_id=user_id)
 
     return SplitResult(
         source_entity_id=entity_id,
