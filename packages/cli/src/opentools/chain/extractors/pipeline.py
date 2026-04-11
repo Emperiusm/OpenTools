@@ -70,8 +70,9 @@ class ExtractionPipeline:
 
     LLM operations are async but the rest of the pipeline is sync. The
     LLM stage is run via ``asyncio.run`` inside the sync method for
-    convenience; production callers in a web context should use
-    ``extract_for_finding_async`` if needed (not implemented in 3C.1).
+    convenience; callers inside a running event loop (FastAPI handlers,
+    asyncio tasks) should use ``extract_for_finding_async`` instead to
+    avoid deadlocking.
     """
 
     def __init__(
@@ -204,6 +205,83 @@ class ExtractionPipeline:
             return []
         try:
             results = asyncio.run(provider.extract_entities(combined, ctx))
+            return list(results)
+        except Exception as exc:
+            logger.warning(
+                "LLM stage3 extraction failed for finding %s: %s",
+                finding.id, exc, exc_info=True,
+            )
+            return []
+
+    async def extract_for_finding_async(
+        self,
+        finding: Finding,
+        *,
+        llm_provider: LLMExtractionProvider | None = None,
+        force: bool = False,
+    ) -> ExtractionResult:
+        """Async variant of extract_for_finding that awaits LLM providers directly.
+
+        Use this from inside an asyncio event loop (e.g., FastAPI handlers,
+        background asyncio.create_task). The CLI should continue to use the
+        sync extract_for_finding method.
+
+        Stages 1 and 2 (parser-aware + rule-based) run synchronously because
+        they are CPU-light and the SQLite store calls are fast enough to not
+        warrant thread offloading at this scale. Only stage 3 (LLM) is awaited.
+        """
+        new_hash = _extraction_input_hash(finding)
+        if not force and self._hash_matches(finding.id, new_hash):
+            return ExtractionResult(
+                entities_created=0, mentions_created=0,
+                stage1_count=0, stage2_count=0, stage3_count=0,
+                cache_hit=True, was_force=False,
+            )
+
+        self.store.delete_mentions_for_finding(finding.id)
+        ctx = ExtractionContext(finding=finding)
+
+        stage1 = self._run_stage1(finding, ctx)
+        ctx.already_extracted.extend(stage1)
+
+        stage2 = self._run_stage2(finding, ctx)
+        ctx.already_extracted.extend(stage2)
+
+        stage3: list[ExtractedEntity] = []
+        if llm_provider is not None:
+            stage3 = await self._run_stage3_async(finding, ctx, llm_provider)
+            ctx.already_extracted.extend(stage3)
+
+        all_raw = stage1 + stage2 + stage3
+        entities_created, mentions_created = self._persist(finding, all_raw)
+        self._update_extraction_state(finding.id, new_hash)
+
+        return ExtractionResult(
+            entities_created=entities_created,
+            mentions_created=mentions_created,
+            stage1_count=len(stage1),
+            stage2_count=len(stage2),
+            stage3_count=len(stage3),
+            cache_hit=False,
+            was_force=force,
+        )
+
+    async def _run_stage3_async(
+        self,
+        finding: Finding,
+        ctx: ExtractionContext,
+        provider: LLMExtractionProvider,
+    ) -> list[ExtractedEntity]:
+        prose_fields = [
+            finding.title or "",
+            finding.description or "",
+            finding.evidence or "",
+        ]
+        combined = "\n".join(p for p in prose_fields if p)
+        if not combined:
+            return []
+        try:
+            results = await provider.extract_entities(combined, ctx)
             return list(results)
         except Exception as exc:
             logger.warning(

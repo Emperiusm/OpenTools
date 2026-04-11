@@ -9,3 +9,10 @@ testpaths = [
     "packages/cli/tests",
     "packages/web/backend/tests",
 ]
+# Ensure the worktree's source packages take precedence over any editable
+# installs that may point to a different checkout (e.g., the main-branch
+# checkout when running from a git worktree).
+pythonpath = [
+    "packages/cli/src",
+    "packages/web/backend",
+]

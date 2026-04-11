@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from opentools.chain.extractors.pipeline import (
@@ -207,3 +208,43 @@ def test_mention_count_accurate_across_findings(engagement_store_and_chain):
     assert ip_row["mention_count"] == 2, (
         f"after re-extraction, mention_count should still be 2, got {ip_row['mention_count']}"
     )
+
+
+def test_extract_for_finding_async_matches_sync(engagement_store_and_chain):
+    """The async variant must produce the same result as the sync variant."""
+    engagement_store, chain_store, now = engagement_store_and_chain
+    finding = _finding(description="SSH on 10.0.0.5 and CVE-2024-1234 applies")
+    _insert_finding(engagement_store, finding)
+
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
+    async_result = asyncio.run(pipeline.extract_for_finding_async(finding))
+
+    assert async_result.cache_hit is False
+    assert async_result.stage2_count >= 2  # ip + cve at minimum
+
+    mentions = chain_store.mentions_for_finding(finding.id)
+    mention_values = {m.raw_value for m in mentions}
+    assert "10.0.0.5" in mention_values
+
+
+def test_extract_for_finding_async_llm_stage_awaited(engagement_store_and_chain):
+    """Stage 3 must work via direct await, not asyncio.run."""
+    engagement_store, chain_store, now = engagement_store_and_chain
+    finding = _finding(description="SSH on 10.0.0.5")
+    _insert_finding(engagement_store, finding)
+
+    from opentools.chain.extractors.llm.ollama import OllamaProvider
+
+    async def mock_call(prompt):
+        return '{"entities": [{"type": "user", "value": "ctf_admin", "confidence": 0.85}]}'
+
+    provider = OllamaProvider(call_fn=mock_call)
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
+
+    async def _run():
+        return await pipeline.extract_for_finding_async(finding, llm_provider=provider)
+
+    result = asyncio.run(_run())
+    assert result.stage3_count >= 1
+    mentions = chain_store.mentions_for_finding(finding.id)
+    assert any("ctf_admin" in m.raw_value for m in mentions)
