@@ -20,31 +20,39 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
         return 0
 
 
-def _migration_v1(conn: sqlite3.Connection) -> None:
-    """Execute all DDL for schema version 1."""
-    conn.executescript("""
-        -- Engagements table
-        CREATE TABLE IF NOT EXISTS engagements (
+# Individual DDL statements keyed by migration version.
+#
+# Each list entry is a single SQL statement executable via conn.execute()
+# (not executescript()). This lets both sync migrate() and async
+# migrate_async() wrap the full sequence in an explicit transaction:
+# executescript implicitly commits, which would break BEGIN IMMEDIATE,
+# so every statement must go through execute() inside the transaction.
+#
+# SQLite parses a CREATE TRIGGER ... BEGIN ... END as a single statement
+# even though the trigger body contains internal semicolons.
+MIGRATION_STATEMENTS: dict[int, list[str]] = {
+    1: [
+        # Engagements table
+        """CREATE TABLE IF NOT EXISTS engagements (
             id          TEXT PRIMARY KEY,
             name        TEXT NOT NULL,
             target      TEXT NOT NULL,
             type        TEXT NOT NULL,
             scope       TEXT,
             status      TEXT NOT NULL DEFAULT 'active',
-            skills_used TEXT,  -- JSON array
+            skills_used TEXT,
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
-        );
-
-        -- Findings table
-        CREATE TABLE IF NOT EXISTS findings (
+        )""",
+        # Findings table
+        """CREATE TABLE IF NOT EXISTS findings (
             id                 TEXT PRIMARY KEY,
             engagement_id      TEXT NOT NULL REFERENCES engagements(id),
             tool               TEXT NOT NULL,
-            corroborated_by    TEXT,   -- JSON array
+            corroborated_by    TEXT,
             cwe                TEXT,
             severity           TEXT NOT NULL,
-            severity_by_tool   TEXT,   -- JSON object
+            severity_by_tool   TEXT,
             status             TEXT NOT NULL DEFAULT 'discovered',
             phase              TEXT,
             title              TEXT NOT NULL,
@@ -59,43 +67,38 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
             dedup_confidence   TEXT,
             created_at         TEXT NOT NULL,
             deleted_at         TEXT
-        );
-
-        -- FTS5 virtual table for full-text search over findings
-        CREATE VIRTUAL TABLE IF NOT EXISTS findings_fts USING fts5(
+        )""",
+        # FTS5 virtual table for full-text search over findings
+        """CREATE VIRTUAL TABLE IF NOT EXISTS findings_fts USING fts5(
             title,
             description,
             evidence,
             remediation,
             content='findings',
             content_rowid='rowid'
-        );
-
-        -- FTS sync trigger: after insert
-        CREATE TRIGGER IF NOT EXISTS findings_ai
+        )""",
+        # FTS sync trigger: after insert
+        """CREATE TRIGGER IF NOT EXISTS findings_ai
         AFTER INSERT ON findings BEGIN
             INSERT INTO findings_fts(rowid, title, description, evidence, remediation)
             VALUES (new.rowid, new.title, new.description, new.evidence, new.remediation);
-        END;
-
-        -- FTS sync trigger: after delete
-        CREATE TRIGGER IF NOT EXISTS findings_ad
+        END""",
+        # FTS sync trigger: after delete
+        """CREATE TRIGGER IF NOT EXISTS findings_ad
         AFTER DELETE ON findings BEGIN
             INSERT INTO findings_fts(findings_fts, rowid, title, description, evidence, remediation)
             VALUES ('delete', old.rowid, old.title, old.description, old.evidence, old.remediation);
-        END;
-
-        -- FTS sync trigger: after update
-        CREATE TRIGGER IF NOT EXISTS findings_au
+        END""",
+        # FTS sync trigger: after update
+        """CREATE TRIGGER IF NOT EXISTS findings_au
         AFTER UPDATE ON findings BEGIN
             INSERT INTO findings_fts(findings_fts, rowid, title, description, evidence, remediation)
             VALUES ('delete', old.rowid, old.title, old.description, old.evidence, old.remediation);
             INSERT INTO findings_fts(rowid, title, description, evidence, remediation)
             VALUES (new.rowid, new.title, new.description, new.evidence, new.remediation);
-        END;
-
-        -- Timeline events table
-        CREATE TABLE IF NOT EXISTS timeline_events (
+        END""",
+        # Timeline events table
+        """CREATE TABLE IF NOT EXISTS timeline_events (
             id            TEXT PRIMARY KEY,
             engagement_id TEXT NOT NULL REFERENCES engagements(id),
             timestamp     TEXT NOT NULL,
@@ -104,10 +107,9 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
             details       TEXT,
             confidence    TEXT NOT NULL DEFAULT 'medium',
             finding_id    TEXT REFERENCES findings(id)
-        );
-
-        -- IOCs (Indicators of Compromise) table
-        CREATE TABLE IF NOT EXISTS iocs (
+        )""",
+        # IOCs (Indicators of Compromise) table
+        """CREATE TABLE IF NOT EXISTS iocs (
             id                TEXT PRIMARY KEY,
             engagement_id     TEXT NOT NULL REFERENCES engagements(id),
             ioc_type          TEXT NOT NULL,
@@ -117,10 +119,9 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
             last_seen         TEXT,
             source_finding_id TEXT REFERENCES findings(id),
             UNIQUE(engagement_id, ioc_type, value)
-        );
-
-        -- Artifacts table
-        CREATE TABLE IF NOT EXISTS artifacts (
+        )""",
+        # Artifacts table
+        """CREATE TABLE IF NOT EXISTS artifacts (
             id            TEXT PRIMARY KEY,
             engagement_id TEXT NOT NULL REFERENCES engagements(id),
             file_path     TEXT NOT NULL,
@@ -128,63 +129,42 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
             description   TEXT,
             source_tool   TEXT,
             created_at    TEXT NOT NULL
-        );
-
-        -- Audit log table
-        CREATE TABLE IF NOT EXISTS audit_log (
+        )""",
+        # Audit log table
+        """CREATE TABLE IF NOT EXISTS audit_log (
             id            TEXT PRIMARY KEY,
             timestamp     TEXT NOT NULL,
             command       TEXT NOT NULL,
-            args          TEXT,  -- JSON object
+            args          TEXT,
             engagement_id TEXT,
             result        TEXT,
             details       TEXT
-        );
-
-        -- Indexes for findings
-        CREATE INDEX IF NOT EXISTS idx_findings_engagement ON findings(engagement_id);
-        CREATE INDEX IF NOT EXISTS idx_findings_severity   ON findings(severity);
-        CREATE INDEX IF NOT EXISTS idx_findings_cwe        ON findings(cwe);
-        CREATE INDEX IF NOT EXISTS idx_findings_status     ON findings(status);
-
-        -- Indexes for timeline_events
-        CREATE INDEX IF NOT EXISTS idx_timeline_engagement ON timeline_events(engagement_id);
-        CREATE INDEX IF NOT EXISTS idx_timeline_timestamp  ON timeline_events(timestamp);
-
-        -- Indexes for iocs
-        CREATE INDEX IF NOT EXISTS idx_iocs_engagement  ON iocs(engagement_id);
-        CREATE INDEX IF NOT EXISTS idx_iocs_type_value  ON iocs(ioc_type, value);
-
-        -- Index for audit_log
-        CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
-    """)
-
-
-def _migration_v2(conn: sqlite3.Connection) -> None:
-    """Add partial indexes optimized for dedup candidate queries."""
-    conn.executescript("""
-        CREATE INDEX IF NOT EXISTS idx_findings_dedup_file
+        )""",
+        # Indexes for findings
+        "CREATE INDEX IF NOT EXISTS idx_findings_engagement ON findings(engagement_id)",
+        "CREATE INDEX IF NOT EXISTS idx_findings_severity   ON findings(severity)",
+        "CREATE INDEX IF NOT EXISTS idx_findings_cwe        ON findings(cwe)",
+        "CREATE INDEX IF NOT EXISTS idx_findings_status     ON findings(status)",
+        # Indexes for timeline_events
+        "CREATE INDEX IF NOT EXISTS idx_timeline_engagement ON timeline_events(engagement_id)",
+        "CREATE INDEX IF NOT EXISTS idx_timeline_timestamp  ON timeline_events(timestamp)",
+        # Indexes for iocs
+        "CREATE INDEX IF NOT EXISTS idx_iocs_engagement  ON iocs(engagement_id)",
+        "CREATE INDEX IF NOT EXISTS idx_iocs_type_value  ON iocs(ioc_type, value)",
+        # Index for audit_log
+        "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)",
+    ],
+    2: [
+        """CREATE INDEX IF NOT EXISTS idx_findings_dedup_file
         ON findings(engagement_id, file_path, line_start)
-        WHERE deleted_at IS NULL;
-
-        CREATE INDEX IF NOT EXISTS idx_findings_dedup_network
+        WHERE deleted_at IS NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_findings_dedup_network
         ON findings(engagement_id, cwe)
-        WHERE file_path IS NULL AND deleted_at IS NULL;
-    """)
-
-
-def _migration_v3(conn: sqlite3.Connection) -> None:
-    """Add chain data layer tables (Phase 3C.1).
-
-    Creates the knowledge graph tables used for entity extraction, finding
-    relations, linker runs, and LLM caches. All tables reference findings(id)
-    via ON DELETE CASCADE so chain data cleans up when findings are hard-deleted.
-    Soft-deletes via findings.deleted_at do NOT cascade — the chain event
-    subscription layer (Task 23b) handles that path explicitly.
-    """
-    conn.executescript("""
-        -- Entity: canonical form of an extracted thing (host, CVE, user, etc.)
-        CREATE TABLE IF NOT EXISTS entity (
+        WHERE file_path IS NULL AND deleted_at IS NULL""",
+    ],
+    3: [
+        # Entity: canonical form of an extracted thing (host, CVE, user, etc.)
+        """CREATE TABLE IF NOT EXISTS entity (
             id              TEXT PRIMARY KEY,
             type            TEXT NOT NULL,
             canonical_value TEXT NOT NULL,
@@ -193,12 +173,11 @@ def _migration_v3(conn: sqlite3.Connection) -> None:
             mention_count   INTEGER NOT NULL DEFAULT 0,
             user_id         TEXT,
             UNIQUE (type, canonical_value, user_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_entity_type_value ON entity(type, canonical_value);
-        CREATE INDEX IF NOT EXISTS idx_entity_user_type ON entity(user_id, type);
-
-        -- EntityMention: one row per occurrence of an entity in a finding
-        CREATE TABLE IF NOT EXISTS entity_mention (
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_entity_type_value ON entity(type, canonical_value)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_user_type ON entity(user_id, type)",
+        # EntityMention: one row per occurrence of an entity in a finding
+        """CREATE TABLE IF NOT EXISTS entity_mention (
             id              TEXT PRIMARY KEY,
             entity_id       TEXT NOT NULL REFERENCES entity(id) ON DELETE CASCADE,
             finding_id      TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
@@ -211,13 +190,12 @@ def _migration_v3(conn: sqlite3.Connection) -> None:
             created_at      TEXT NOT NULL,
             user_id         TEXT,
             UNIQUE (entity_id, finding_id, field, offset_start)
-        );
-        CREATE INDEX IF NOT EXISTS idx_em_finding ON entity_mention(finding_id);
-        CREATE INDEX IF NOT EXISTS idx_em_entity ON entity_mention(entity_id);
-        CREATE INDEX IF NOT EXISTS idx_em_entity_finding ON entity_mention(entity_id, finding_id);
-
-        -- FindingRelation: directed edge in the attack chain graph
-        CREATE TABLE IF NOT EXISTS finding_relation (
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_em_finding ON entity_mention(finding_id)",
+        "CREATE INDEX IF NOT EXISTS idx_em_entity ON entity_mention(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_em_entity_finding ON entity_mention(entity_id, finding_id)",
+        # FindingRelation: directed edge in the attack chain graph
+        """CREATE TABLE IF NOT EXISTS finding_relation (
             id                        TEXT PRIMARY KEY,
             source_finding_id         TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
             target_finding_id         TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
@@ -234,13 +212,12 @@ def _migration_v3(conn: sqlite3.Connection) -> None:
             updated_at                TEXT NOT NULL,
             user_id                   TEXT,
             UNIQUE (source_finding_id, target_finding_id, user_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_fr_source ON finding_relation(source_finding_id);
-        CREATE INDEX IF NOT EXISTS idx_fr_target ON finding_relation(target_finding_id);
-        CREATE INDEX IF NOT EXISTS idx_fr_status ON finding_relation(status);
-
-        -- LinkerRun: audit trail for linker invocations
-        CREATE TABLE IF NOT EXISTS linker_run (
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_fr_source ON finding_relation(source_finding_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fr_target ON finding_relation(target_finding_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fr_status ON finding_relation(status)",
+        # LinkerRun: audit trail for linker invocations
+        """CREATE TABLE IF NOT EXISTS linker_run (
             id                       TEXT PRIMARY KEY,
             started_at               TEXT NOT NULL,
             finished_at              TEXT,
@@ -263,49 +240,79 @@ def _migration_v3(conn: sqlite3.Connection) -> None:
             error                    TEXT,
             generation               INTEGER NOT NULL DEFAULT 0,
             user_id                  TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_lr_scope ON linker_run(scope, scope_id);
-        CREATE INDEX IF NOT EXISTS idx_lr_generation ON linker_run(generation DESC);
-
-        -- ExtractionCache: content-addressed cache for LLM entity extraction
-        CREATE TABLE IF NOT EXISTS extraction_cache (
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_lr_scope ON linker_run(scope, scope_id)",
+        "CREATE INDEX IF NOT EXISTS idx_lr_generation ON linker_run(generation DESC)",
+        # ExtractionCache: content-addressed cache for LLM entity extraction
+        """CREATE TABLE IF NOT EXISTS extraction_cache (
             cache_key       TEXT PRIMARY KEY,
             provider        TEXT NOT NULL,
             model           TEXT NOT NULL,
             schema_version  INTEGER NOT NULL,
             result_json     BLOB NOT NULL,
             created_at      TEXT NOT NULL
-        );
-
-        -- LLMLinkCache: content-addressed cache for LLM link classification
-        CREATE TABLE IF NOT EXISTS llm_link_cache (
+        )""",
+        # LLMLinkCache: content-addressed cache for LLM link classification
+        """CREATE TABLE IF NOT EXISTS llm_link_cache (
             cache_key            TEXT PRIMARY KEY,
             provider             TEXT NOT NULL,
             model                TEXT NOT NULL,
             schema_version       INTEGER NOT NULL,
             classification_json  BLOB NOT NULL,
             created_at           TEXT NOT NULL
-        );
-
-        -- FindingExtractionState: change detection for re-extraction
-        CREATE TABLE IF NOT EXISTS finding_extraction_state (
+        )""",
+        # FindingExtractionState: change detection for re-extraction
+        """CREATE TABLE IF NOT EXISTS finding_extraction_state (
             finding_id              TEXT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
             extraction_input_hash   TEXT NOT NULL,
             last_extracted_at       TEXT NOT NULL,
             last_extractor_set_json BLOB NOT NULL,
             user_id                 TEXT
-        );
-
-        -- FindingParserOutput: structured parser output for parser-aware extractors
-        CREATE TABLE IF NOT EXISTS finding_parser_output (
+        )""",
+        # FindingParserOutput: structured parser output for parser-aware extractors
+        """CREATE TABLE IF NOT EXISTS finding_parser_output (
             finding_id      TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
             parser_name     TEXT NOT NULL,
             data_json       BLOB NOT NULL,
             created_at      TEXT NOT NULL,
             user_id         TEXT,
             PRIMARY KEY (finding_id, parser_name)
-        );
-    """)
+        )""",
+    ],
+}
+
+
+def _apply_statements(conn: sqlite3.Connection, version: int) -> None:
+    """Execute all DDL statements for a given migration version.
+
+    Uses conn.execute() (not executescript) so the caller can wrap the
+    whole migration sequence in an explicit transaction — executescript
+    implicitly commits any pending transaction, which would break that.
+    """
+    for stmt in MIGRATION_STATEMENTS[version]:
+        conn.execute(stmt)
+
+
+def _migration_v1(conn: sqlite3.Connection) -> None:
+    """Execute all DDL for schema version 1."""
+    _apply_statements(conn, 1)
+
+
+def _migration_v2(conn: sqlite3.Connection) -> None:
+    """Add partial indexes optimized for dedup candidate queries."""
+    _apply_statements(conn, 2)
+
+
+def _migration_v3(conn: sqlite3.Connection) -> None:
+    """Add chain data layer tables (Phase 3C.1).
+
+    Creates the knowledge graph tables used for entity extraction, finding
+    relations, linker runs, and LLM caches. All tables reference findings(id)
+    via ON DELETE CASCADE so chain data cleans up when findings are hard-deleted.
+    Soft-deletes via findings.deleted_at do NOT cascade — the chain event
+    subscription layer handles that path explicitly.
+    """
+    _apply_statements(conn, 3)
 
 
 # Registry of all migrations keyed by version number
@@ -316,16 +323,13 @@ LATEST_VERSION: int = max(MIGRATIONS.keys())
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """
-    Bring the database schema up to LATEST_VERSION.
+    """Bring the database schema up to LATEST_VERSION.
 
-    - Creates the schema_version table if it does not exist.
-    - Runs every pending migration in version order.
-    - Records each applied version with an ISO 8601 timestamp.
-    - Raises RuntimeError if the database is already at a version newer
-      than LATEST_VERSION (forward-migration guard).
+    Wraps the pending-migration sequence in a BEGIN IMMEDIATE transaction
+    so a failure in any step rolls back all DDL applied by that run
+    (spec §5.7 A3 fix).
     """
-    # Ensure the version-tracking table exists
+    # Ensure the version-tracking table exists (outside the migration txn)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (
             version    INTEGER PRIMARY KEY,
@@ -343,12 +347,19 @@ def migrate(conn: sqlite3.Connection) -> None:
             "Please upgrade the application."
         )
 
-    for version in sorted(MIGRATIONS.keys()):
-        if version <= current:
-            continue
-        MIGRATIONS[version](conn)
-        conn.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-            (version, datetime.now(timezone.utc).isoformat()),
-        )
+    # Wrap pending migrations in a single transaction so partial
+    # failures roll back cleanly (A3 in spec §5.7).
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for version in sorted(MIGRATIONS.keys()):
+            if version <= current:
+                continue
+            MIGRATIONS[version](conn)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, datetime.now(timezone.utc).isoformat()),
+            )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
