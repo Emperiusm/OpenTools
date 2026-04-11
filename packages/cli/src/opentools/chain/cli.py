@@ -252,18 +252,26 @@ def path(
 
 
 @app.command()
-def export(
+@_async_command
+async def export(
     engagement: str | None = typer.Option(None, "--engagement"),
     output: Path = typer.Option(..., "--output", help="Output JSON path"),
 ) -> None:
     """Export chain data to JSON."""
-    _engagement_store, chain_store = _get_stores()
-    result = export_chain(store=chain_store, engagement_id=engagement, output_path=output)
-    rprint(
-        f"[green]Exported[/green] {result.entities_exported} entities, "
-        f"{result.mentions_exported} mentions, {result.relations_exported} relations "
-        f"to {result.output_path}"
-    )
+    _engagement_store, chain_store = await _get_stores_async()
+    try:
+        result = await export_chain(
+            store=chain_store,
+            engagement_id=engagement,
+            output_path=output,
+        )
+        rprint(
+            f"[green]Exported[/green] {result.entities_exported} entities, "
+            f"{result.mentions_exported} mentions, {result.relations_exported} relations "
+            f"to {result.output_path}"
+        )
+    finally:
+        await chain_store.close()
 
 
 @app.command()

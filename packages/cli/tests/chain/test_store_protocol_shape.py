@@ -40,15 +40,17 @@ EXPECTED_METHODS = {
     # LLM caches (4)
     "get_extraction_cache", "put_extraction_cache",
     "get_llm_link_cache", "put_llm_link_cache",
-    # Export (2)
-    "fetch_findings_for_engagement", "export_dump_stream",
+    # Export (3)
+    "fetch_findings_for_engagement", "fetch_all_finding_ids",
+    "export_dump_stream",
 }
 
 
 def test_protocol_has_all_expected_methods():
-    # Spec §4.3 lists 41 methods; "32" appears as a shorthand earlier
-    # in the spec but was incorrect. 41 is the authoritative count.
-    assert len(EXPECTED_METHODS) == 41
+    # Spec §4.3 originally listed 41 methods; Task 24 added
+    # fetch_all_finding_ids for the exporter's "all engagements" path,
+    # bringing the total to 42.
+    assert len(EXPECTED_METHODS) == 42
     methods = _protocol_methods()
     missing = EXPECTED_METHODS - methods
     extra = methods - EXPECTED_METHODS

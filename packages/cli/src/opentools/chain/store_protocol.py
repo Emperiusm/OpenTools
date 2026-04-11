@@ -289,6 +289,10 @@ class ChainStoreProtocol(Protocol):
         self, engagement_id: str, *, user_id: UUID | None
     ) -> list[str]: ...
 
+    async def fetch_all_finding_ids(
+        self, *, user_id: UUID | None
+    ) -> list[str]: ...
+
     def export_dump_stream(
         self,
         *,

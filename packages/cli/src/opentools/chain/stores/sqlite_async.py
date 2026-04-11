@@ -1184,6 +1184,22 @@ class AsyncChainStore:
             rows = await cursor.fetchall()
         return [row["id"] for row in rows]
 
+    @require_initialized
+    async def fetch_all_finding_ids(self, *, user_id) -> list[str]:
+        """Return ids of all non-deleted findings across every engagement.
+
+        Used by the exporter's "all engagements" path. Kept as a
+        separate protocol method rather than overloading
+        ``fetch_findings_for_engagement`` with a None sentinel because
+        the Postgres backend's scoping semantics differ meaningfully
+        between "all findings" and "one engagement".
+        """
+        async with self._conn.execute(
+            "SELECT id FROM findings WHERE deleted_at IS NULL",
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [row["id"] for row in rows]
+
     async def export_dump_stream(
         self,
         *,
