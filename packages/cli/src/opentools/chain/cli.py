@@ -20,6 +20,7 @@ Commands deferred (not implemented in 3C.1 MVP):
 from __future__ import annotations
 
 import asyncio
+import functools
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -65,6 +66,22 @@ def _get_stores() -> tuple[EngagementStore, ChainStore]:
     return engagement_store, chain_store
 
 
+def _async_command(coro_fn):
+    """Expose an ``async def`` function as a synchronous Typer command body.
+
+    Typer 0.24 does not recognize ``async def`` commands natively — the
+    coroutine object is created and silently discarded without ever
+    running. This adapter wraps a coroutine function in ``asyncio.run``
+    so it can be registered via ``@app.command()``. ``functools.wraps``
+    preserves the signature so Typer can introspect Options and
+    Arguments declared on the async function.
+    """
+    @functools.wraps(coro_fn)
+    def _wrapper(*args, **kwargs):
+        return asyncio.run(coro_fn(*args, **kwargs))
+    return _wrapper
+
+
 async def _get_stores_async() -> tuple[EngagementStore, "AsyncChainStore"]:
     """Async variant of :func:`_get_stores`.
 
@@ -108,25 +125,12 @@ def status() -> None:
 
 
 @app.command()
-def rebuild(
+@_async_command
+async def rebuild(
     engagement: str | None = typer.Option(None, "--engagement", help="Engagement id to rebuild (default: all)"),
     force: bool = typer.Option(False, "--force", help="Re-extract even unchanged findings"),
 ) -> None:
-    """Re-run extraction and linking for all findings (optionally scoped to one engagement).
-
-    Runs the async rebuild pipeline (``AsyncExtractionPipeline`` +
-    ``AsyncLinkerEngine``) against an ``AsyncChainStore``. Typer 0.24
-    does not natively support ``async def`` commands, so the body is
-    wrapped in :func:`asyncio.run` inside a sync command.
-    """
-    asyncio.run(_rebuild_async(engagement=engagement, force=force))
-
-
-async def _rebuild_async(*, engagement: str | None, force: bool) -> None:
-    """Async implementation of the ``rebuild`` command."""
-    # Imports kept local to avoid import cycles and to keep the sync
-    # CLI surface loadable without pulling in aiosqlite at module
-    # import time.
+    """Re-run extraction and linking for all findings (optionally scoped to one engagement)."""
     from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
     from opentools.chain.linker.engine import AsyncLinkerEngine
 
@@ -134,24 +138,12 @@ async def _rebuild_async(*, engagement: str | None, force: bool) -> None:
     try:
         cfg = get_chain_config()
 
-        # Resolve finding ids via protocol (no raw SQL).
         if engagement:
             finding_ids = await chain_store.fetch_findings_for_engagement(
                 engagement, user_id=None,
             )
         else:
-            # For the "all engagements" path we enumerate engagements
-            # from the sync EngagementStore and union their scoped
-            # finding id lists. EngagementStore has no global
-            # list_findings helper and the async protocol is
-            # engagement-scoped, so we fan out per engagement.
-            finding_ids = []
-            for eng in engagement_store.list_all():
-                finding_ids.extend(
-                    await chain_store.fetch_findings_for_engagement(
-                        eng.id, user_id=None,
-                    )
-                )
+            finding_ids = [f.id for f in engagement_store.list_findings()]
 
         if not finding_ids:
             rprint("[yellow]no findings to process[/yellow]")

@@ -413,6 +413,13 @@ class EngagementStore:
         rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_finding(r) for r in rows]
 
+    def list_findings(self) -> list[Finding]:
+        """Return every non-deleted finding across all engagements."""
+        rows = self._conn.execute(
+            "SELECT * FROM findings WHERE deleted_at IS NULL ORDER BY created_at DESC"
+        ).fetchall()
+        return [self._row_to_finding(r) for r in rows]
+
     def update_finding_status(self, finding_id: str, status: FindingStatus) -> None:
         self._conn.execute(
             "UPDATE findings SET status = ? WHERE id = ?",

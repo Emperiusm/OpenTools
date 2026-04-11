@@ -189,9 +189,26 @@ class DrainWorker:
     task: "asyncio.Task"
     queue: "asyncio.Queue"
 
+    async def wait_idle(self) -> None:
+        """Pump pending emits and block until the queue is fully drained.
+
+        The sync event-bus handler dispatches via
+        ``loop.call_soon_threadsafe(queue.put_nowait, ...)`` so items
+        emitted from a sync call (e.g. ``engagement_store.add_finding``)
+        only land on the queue on the *next* event-loop tick. A single
+        ``asyncio.sleep(0)`` yield pumps those pending callbacks, after
+        which ``queue.join()`` observes the correct unfinished-task
+        count and blocks until every drain worker handler has called
+        ``task_done()``. Use this instead of a hand-rolled sleep when
+        you need "everything emitted so far has been processed"
+        semantics.
+        """
+        await asyncio.sleep(0)
+        await self.queue.join()
+
     async def stop(self) -> None:
         """Wait for queued items to drain, then cancel the worker task."""
-        await self.queue.join()
+        await self.wait_idle()
         self.task.cancel()
         try:
             await self.task

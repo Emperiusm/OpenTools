@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -164,10 +163,9 @@ async def test_drain_worker_processes_finding_created(async_chain_stores):
 
     engagement_store.add_finding(_finding("drain_a", description="SSH on 10.0.0.5"))
 
-    # Let the event loop pump so call_soon_threadsafe dispatch lands
-    await asyncio.sleep(0.01)
-    # Wait for drain worker to process the queued finding
-    await worker.queue.join()
+    # Pump pending call_soon_threadsafe dispatches and wait for the
+    # drain worker to fully process the queued finding.
+    await worker.wait_idle()
 
     mentions = await chain_store.mentions_for_finding("drain_a", user_id=None)
     assert len(mentions) >= 1
@@ -194,11 +192,10 @@ async def test_drain_worker_respects_batch_context(async_chain_stores):
     set_batch_context(True)
     try:
         engagement_store.add_finding(_finding("drain_b", description="HTTP on 10.0.0.5"))
-        # Let the event loop pump so call_soon_threadsafe dispatch lands
-        await asyncio.sleep(0.01)
-        # Wait for any queued items to be pulled off (but short-circuited
-        # inside the drain worker because batch context is active)
-        await worker.queue.join()
+        # Pump pending call_soon_threadsafe dispatches and wait for the
+        # drain worker to consume the item (which it will short-circuit
+        # because batch context is active).
+        await worker.wait_idle()
 
         mentions = await chain_store.mentions_for_finding("drain_b", user_id=None)
         # Inside batch context the drain worker consumed the finding id
