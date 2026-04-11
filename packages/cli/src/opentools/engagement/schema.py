@@ -363,3 +363,50 @@ def migrate(conn: sqlite3.Connection) -> None:
     except Exception:
         conn.rollback()
         raise
+
+
+async def migrate_async(conn) -> None:
+    """Async sibling of migrate() for aiosqlite connections.
+
+    Runs the same migration sequence as sync migrate() but with
+    awaited execute calls. Shares MIGRATION_STATEMENTS so the two
+    code paths can never drift.
+
+    Wraps the pending-migration sequence in a transaction for atomicity.
+    """
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version    INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+    """)
+    await conn.commit()
+
+    async with conn.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version"
+    ) as cursor:
+        row = await cursor.fetchone()
+    current = row[0] if row else 0
+
+    if current > LATEST_VERSION:
+        raise RuntimeError(
+            f"Database schema version {current} is newer than the "
+            f"maximum supported version {LATEST_VERSION}. "
+            "Please upgrade the application."
+        )
+
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        for version in sorted(MIGRATIONS.keys()):
+            if version <= current:
+                continue
+            for stmt in MIGRATION_STATEMENTS[version]:
+                await conn.execute(stmt)
+            await conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, datetime.now(timezone.utc).isoformat()),
+            )
+        await conn.execute("COMMIT")
+    except Exception:
+        await conn.execute("ROLLBACK")
+        raise
