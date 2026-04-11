@@ -6,7 +6,6 @@ Create Date: 2026-04-11
 """
 from alembic import op
 import sqlalchemy as sa
-import sqlmodel
 
 revision = "004"
 down_revision = "003"
@@ -30,7 +29,7 @@ def upgrade() -> None:
             sa.Column("schema_version", sa.Integer(), nullable=False),
             sa.Column("result_json", sa.LargeBinary(), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-            sa.Column("user_id", sqlmodel.sql.sqltypes.GUID(), nullable=True),
+            sa.Column("user_id", sa.Uuid(), nullable=True),
             sa.ForeignKeyConstraint(["user_id"], ["user.id"]),
             sa.PrimaryKeyConstraint("cache_key"),
         )
@@ -49,7 +48,7 @@ def upgrade() -> None:
                 "chain_extraction_cache",
                 sa.Column(
                     "user_id",
-                    sqlmodel.sql.sqltypes.GUID(),
+                    sa.Uuid(),
                     nullable=True,
                 ),
             )
@@ -64,7 +63,7 @@ def upgrade() -> None:
             sa.Column("schema_version", sa.Integer(), nullable=False),
             sa.Column("classification_json", sa.LargeBinary(), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-            sa.Column("user_id", sqlmodel.sql.sqltypes.GUID(), nullable=True),
+            sa.Column("user_id", sa.Uuid(), nullable=True),
             sa.ForeignKeyConstraint(["user_id"], ["user.id"]),
             sa.PrimaryKeyConstraint("cache_key"),
         )
@@ -83,7 +82,7 @@ def upgrade() -> None:
                 "chain_llm_link_cache",
                 sa.Column(
                     "user_id",
-                    sqlmodel.sql.sqltypes.GUID(),
+                    sa.Uuid(),
                     nullable=True,
                 ),
             )

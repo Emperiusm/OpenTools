@@ -20,7 +20,6 @@ Create Date: 2026-04-11
 """
 from alembic import op
 import sqlalchemy as sa
-import sqlmodel
 
 revision = "005"
 down_revision = "004"
@@ -50,7 +49,7 @@ def upgrade() -> None:
             ),
             sa.Column(
                 "user_id",
-                sqlmodel.sql.sqltypes.GUID(),
+                sa.Uuid(),
                 nullable=True,
             ),
             sa.ForeignKeyConstraint(["finding_id"], ["finding.id"]),
@@ -76,7 +75,7 @@ def upgrade() -> None:
             ),
             sa.Column(
                 "user_id",
-                sqlmodel.sql.sqltypes.GUID(),
+                sa.Uuid(),
                 nullable=True,
             ),
             sa.ForeignKeyConstraint(["finding_id"], ["finding.id"]),

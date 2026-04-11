@@ -6,7 +6,6 @@ Create Date: 2026-04-09
 """
 from alembic import op
 import sqlalchemy as sa
-import sqlmodel
 
 revision = "002"
 down_revision = "001"
@@ -18,7 +17,7 @@ def upgrade():
     op.create_table(
         "ioc_enrichment",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("user_id", sqlmodel.sql.sqltypes.GUID(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("ioc_type", sa.String(), nullable=False),
         sa.Column("ioc_value", sa.String(), nullable=False),
         sa.Column("provider", sa.String(), nullable=False),
