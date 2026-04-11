@@ -14,11 +14,13 @@ from __future__ import annotations
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterable
 
 import aiosqlite
 
+from opentools.chain.models import Entity
 from opentools.chain.stores._common import (
     StoreNotInitialized,
     require_initialized,
@@ -26,6 +28,19 @@ from opentools.chain.stores._common import (
 from opentools.engagement.schema import migrate_async
 
 logger = logging.getLogger(__name__)
+
+
+def _row_to_entity(row: aiosqlite.Row) -> Entity:
+    """Convert an aiosqlite.Row to an Entity model."""
+    return Entity(
+        id=row["id"],
+        type=row["type"],
+        canonical_value=row["canonical_value"],
+        first_seen_at=datetime.fromisoformat(row["first_seen_at"]),
+        last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
+        mention_count=row["mention_count"],
+        user_id=row["user_id"],
+    )
 
 
 class AsyncChainStore:
@@ -135,7 +150,123 @@ class AsyncChainStore:
         async with self.transaction():
             yield
 
+    # ─── Entity CRUD ─────────────────────────────────────────────────────
+
     @require_initialized
-    async def get_entity(self, entity_id: str, *, user_id):
-        """Stub — real implementation lands in Task 7."""
-        return None  # placeholder, replaced in Task 7
+    async def upsert_entity(self, entity: Entity, *, user_id) -> None:
+        await self._conn.execute(
+            """
+            INSERT INTO entity (id, type, canonical_value, first_seen_at, last_seen_at,
+                                mention_count, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                last_seen_at=excluded.last_seen_at,
+                mention_count=excluded.mention_count
+            """,
+            (
+                entity.id,
+                entity.type,
+                entity.canonical_value,
+                entity.first_seen_at.isoformat(),
+                entity.last_seen_at.isoformat(),
+                entity.mention_count,
+                str(entity.user_id) if entity.user_id else None,
+            ),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
+    async def upsert_entities_bulk(
+        self, entities: Iterable[Entity], *, user_id
+    ) -> None:
+        rows = [
+            (
+                e.id,
+                e.type,
+                e.canonical_value,
+                e.first_seen_at.isoformat(),
+                e.last_seen_at.isoformat(),
+                e.mention_count,
+                str(e.user_id) if e.user_id else None,
+            )
+            for e in entities
+        ]
+        if not rows:
+            return
+        await self._conn.executemany(
+            """
+            INSERT INTO entity (id, type, canonical_value, first_seen_at, last_seen_at,
+                                mention_count, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                last_seen_at=excluded.last_seen_at,
+                mention_count=excluded.mention_count
+            """,
+            rows,
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
+    async def get_entity(self, entity_id: str, *, user_id) -> Entity | None:
+        async with self._conn.execute(
+            "SELECT * FROM entity WHERE id = ?", (entity_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _row_to_entity(row) if row else None
+
+    @require_initialized
+    async def get_entities_by_ids(
+        self, entity_ids: Iterable[str], *, user_id
+    ) -> dict[str, Entity]:
+        ids = list(entity_ids)
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        async with self._conn.execute(
+            f"SELECT * FROM entity WHERE id IN ({placeholders})", ids
+        ) as cur:
+            rows = await cur.fetchall()
+        result: dict[str, Entity] = {}
+        for row in rows:
+            entity = _row_to_entity(row)
+            result[entity.id] = entity
+        return result
+
+    @require_initialized
+    async def list_entities(
+        self,
+        *,
+        user_id,
+        entity_type: str | None = None,
+        min_mentions: int = 0,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Entity]:
+        clauses: list[str] = []
+        params: list = []
+        if entity_type is not None:
+            clauses.append("type = ?")
+            params.append(entity_type)
+        if min_mentions > 0:
+            clauses.append("mention_count >= ?")
+            params.append(min_mentions)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            f"SELECT * FROM entity {where} "
+            "ORDER BY mention_count DESC, canonical_value "
+            "LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [_row_to_entity(row) for row in rows]
+
+    @require_initialized
+    async def delete_entity(self, entity_id: str, *, user_id) -> None:
+        await self._conn.execute(
+            "DELETE FROM entity WHERE id = ?", (entity_id,)
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
