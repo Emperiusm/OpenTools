@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from opentools.chain.config import ChainConfig
@@ -147,3 +148,32 @@ def test_llm_pass_cache_hit(engagement_store_and_chain):
     result = llm_link_pass(provider=provider, store=chain_store, min_weight=0.0, max_weight=5.0)
     assert result.cache_hits >= 1
     assert result.llm_calls == 0
+
+
+def test_llm_link_pass_async_promotes_via_await(engagement_store_and_chain):
+    """The async variant must promote candidate edges exactly like the sync one."""
+    from opentools.chain.linker.llm_pass import llm_link_pass_async
+    from opentools.chain.types import RelationStatus
+
+    engagement_store, chain_store, _ = engagement_store_and_chain
+    _seed_candidate_edge(engagement_store, chain_store)
+
+    chain_store._conn.execute(
+        "UPDATE finding_relation SET status = ?",
+        (RelationStatus.CANDIDATE.value,),
+    )
+    chain_store._conn.commit()
+
+    provider = _MockProvider()  # default: related=True, confidence=0.9
+
+    async def _run():
+        return await llm_link_pass_async(
+            provider=provider, store=chain_store,
+            min_weight=0.0, max_weight=5.0,
+        )
+
+    result = asyncio.run(_run())
+    assert result.promoted >= 1
+
+    row = chain_store.execute_one("SELECT status FROM finding_relation LIMIT 1")
+    assert row["status"] == RelationStatus.AUTO_CONFIRMED.value

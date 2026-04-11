@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+# Root-level config for running all tests in one invocation.
+# asyncio_mode = "auto" is required by the web backend tests (async fixtures
+# and test functions without explicit @pytest.mark.asyncio decorators).
+# The CLI tests use plain synchronous tests or asyncio.run() wrappers so they
+# work correctly under either mode.
+asyncio_mode = "auto"
+testpaths = [
+    "packages/cli/tests",
+    "packages/web/backend/tests",
+]
+# Ensure the worktree's source packages take precedence over any editable
+# installs that may point to a different checkout (e.g., the main-branch
+# checkout when running from a git worktree).
+pythonpath = [
+    "packages/cli/src",
+    "packages/web/backend",
+]

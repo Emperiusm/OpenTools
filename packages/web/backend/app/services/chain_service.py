@@ -1,8 +1,8 @@
 """Chain service — async SQLModel queries for chain data.
 
-READ-ONLY for 3C.1 MVP. Rebuild endpoint returns a stub response;
-actual extraction/linking via the CLI package is deferred to a
-follow-up implementation task.
+Read queries are handled directly by this service. The rebuild endpoint
+creates a ChainLinkerRun row via create_linker_run, then delegates the
+actual extraction and linking to the background worker in chain_rebuild.py.
 """
 from __future__ import annotations
 
@@ -161,7 +161,12 @@ class ChainService:
         user_id: uuid.UUID,
         engagement_id: str | None,
     ) -> ChainLinkerRun:
-        """Create a stub linker run row that a future task will populate."""
+        """Create a linker run row in pending state.
+
+        The caller (rebuild_chain route handler) is responsible for
+        launching chain_rebuild.run_rebuild as a background task that
+        transitions the row through pending -> running -> done/failed.
+        """
         run = ChainLinkerRun(
             id=f"run_{uuid.uuid4().hex[:12]}",
             user_id=user_id,
