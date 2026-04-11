@@ -5,6 +5,7 @@
 # The CLI tests use plain synchronous tests or asyncio.run() wrappers so they
 # work correctly under either mode.
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = [
     "packages/cli/tests",
     "packages/web/backend/tests",
