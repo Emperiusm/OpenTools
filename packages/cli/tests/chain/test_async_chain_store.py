@@ -1254,3 +1254,109 @@ async def test_fetch_linker_runs_respects_limit(linker_store):
 
     runs_all = await linker_store.fetch_linker_runs(user_id=None, limit=10)
     assert len(runs_all) == 5
+
+
+# --- Extraction state + parser output ---
+
+
+@pytest_asyncio.fixture
+async def extraction_store(tmp_path):
+    store = AsyncChainStore(db_path=tmp_path / "chain.db")
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_get_extraction_hash_missing_returns_none(extraction_store):
+    got = await extraction_store.get_extraction_hash(
+        "nonexistent-finding", user_id=None
+    )
+    assert got is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_extraction_state_stores_hash_then_get_returns_it(
+    extraction_store,
+):
+    await _seed_finding(extraction_store, engagement_id="eng1", finding_id="f1")
+    await extraction_store.upsert_extraction_state(
+        finding_id="f1",
+        extraction_input_hash="hash-abc",
+        extractor_set=["ext_a", "ext_b"],
+        user_id=None,
+    )
+    got = await extraction_store.get_extraction_hash("f1", user_id=None)
+    assert got == "hash-abc"
+
+
+@pytest.mark.asyncio
+async def test_upsert_extraction_state_updates_on_conflict(extraction_store):
+    await _seed_finding(extraction_store, engagement_id="eng1", finding_id="f1")
+    await extraction_store.upsert_extraction_state(
+        finding_id="f1",
+        extraction_input_hash="hash-v1",
+        extractor_set=["ext_a"],
+        user_id=None,
+    )
+    await extraction_store.upsert_extraction_state(
+        finding_id="f1",
+        extraction_input_hash="hash-v2",
+        extractor_set=["ext_a", "ext_b"],
+        user_id=None,
+    )
+    got = await extraction_store.get_extraction_hash("f1", user_id=None)
+    assert got == "hash-v2"
+
+    # Verify extractor_set was also updated
+    async with extraction_store._conn.execute(
+        "SELECT last_extractor_set_json FROM finding_extraction_state "
+        "WHERE finding_id = ?",
+        ("f1",),
+    ) as cur:
+        row = await cur.fetchone()
+    import orjson
+
+    assert orjson.loads(row["last_extractor_set_json"]) == ["ext_a", "ext_b"]
+
+
+@pytest.mark.asyncio
+async def test_get_parser_output_empty_returns_empty_list(extraction_store):
+    got = await extraction_store.get_parser_output(
+        "nonexistent-finding", user_id=None
+    )
+    assert got == []
+
+
+@pytest.mark.asyncio
+async def test_get_parser_output_returns_entries(extraction_store):
+    await _seed_finding(extraction_store, engagement_id="eng1", finding_id="f1")
+    import orjson
+
+    now = datetime.now(timezone.utc).isoformat()
+    await extraction_store._conn.execute(
+        """
+        INSERT INTO finding_parser_output
+            (finding_id, parser_name, data_json, created_at, user_id)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        ("f1", "parser_a", orjson.dumps({"key": "value"}), now, None),
+    )
+    await extraction_store._conn.execute(
+        """
+        INSERT INTO finding_parser_output
+            (finding_id, parser_name, data_json, created_at, user_id)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        ("f1", "parser_b", orjson.dumps({"other": 42}), now, None),
+    )
+    await extraction_store._conn.commit()
+
+    got = await extraction_store.get_parser_output("f1", user_id=None)
+    assert len(got) == 2
+    by_name = {po.parser_name: po for po in got}
+    assert by_name["parser_a"].data == {"key": "value"}
+    assert by_name["parser_b"].data == {"other": 42}
+    assert by_name["parser_a"].finding_id == "f1"

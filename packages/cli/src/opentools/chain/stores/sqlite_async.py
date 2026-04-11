@@ -23,6 +23,7 @@ import aiosqlite
 from opentools.chain.models import (
     Entity,
     EntityMention,
+    FindingParserOutput,
     FindingRelation,
     LinkerRun,
     RelationReason,
@@ -144,6 +145,26 @@ def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
         duration_ms=row["duration_ms"],
         error=row["error"],
         generation=row["generation"],
+        user_id=row["user_id"],
+    )
+
+
+def _row_to_parser_output(row: aiosqlite.Row) -> FindingParserOutput:
+    """Convert an aiosqlite.Row from finding_parser_output to a model."""
+    import orjson
+
+    raw = row["data_json"]
+    data: dict = {}
+    if raw:
+        try:
+            data = orjson.loads(raw)
+        except Exception:
+            data = {}
+    return FindingParserOutput(
+        finding_id=row["finding_id"],
+        parser_name=row["parser_name"],
+        data=data,
+        created_at=datetime.fromisoformat(row["created_at"]),
         user_id=row["user_id"],
     )
 
@@ -966,3 +987,62 @@ class AsyncChainStore:
         ) as cursor:
             rows = await cursor.fetchall()
         return [_row_to_linker_run(row) for row in rows]
+
+    # ─── Extraction state + parser output ────────────────────────────────
+
+    @require_initialized
+    async def get_extraction_hash(
+        self, finding_id: str, *, user_id
+    ) -> str | None:
+        async with self._conn.execute(
+            "SELECT extraction_input_hash FROM finding_extraction_state "
+            "WHERE finding_id = ?",
+            (finding_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["extraction_input_hash"] if row else None
+
+    @require_initialized
+    async def upsert_extraction_state(
+        self,
+        *,
+        finding_id: str,
+        extraction_input_hash: str,
+        extractor_set: list[str],
+        user_id,
+    ) -> None:
+        import orjson
+        from datetime import datetime as _dt, timezone as _tz
+
+        await self._conn.execute(
+            """
+            INSERT INTO finding_extraction_state
+                (finding_id, extraction_input_hash, last_extracted_at,
+                 last_extractor_set_json, user_id)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(finding_id) DO UPDATE SET
+                extraction_input_hash = excluded.extraction_input_hash,
+                last_extracted_at = excluded.last_extracted_at,
+                last_extractor_set_json = excluded.last_extractor_set_json
+            """,
+            (
+                finding_id,
+                extraction_input_hash,
+                _dt.now(_tz.utc).isoformat(),
+                orjson.dumps(list(extractor_set)),
+                str(user_id) if user_id else None,
+            ),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
+    async def get_parser_output(
+        self, finding_id: str, *, user_id
+    ) -> list[FindingParserOutput]:
+        async with self._conn.execute(
+            "SELECT * FROM finding_parser_output WHERE finding_id = ?",
+            (finding_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_parser_output(row) for row in rows]
