@@ -32,7 +32,7 @@ def _utcnow_iso() -> str:
     return _utcnow().isoformat()
 
 
-class ChainStore:
+class SyncChainStore:
     """Chain-specific CRUD helper over a shared sqlite3 connection.
 
     The caller owns the connection. Schema is created by the engagement
@@ -231,3 +231,9 @@ def _row_to_relation(row: sqlite3.Row) -> FindingRelation:
         updated_at=datetime.fromisoformat(row["updated_at"]),
         user_id=row["user_id"],
     )
+
+
+# Backwards-compat alias preserved during the async store refactor.
+# Consumers still import `ChainStore` and get the sync implementation.
+# Phase 5 deletes this file entirely.
+ChainStore = SyncChainStore
