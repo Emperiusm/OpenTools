@@ -98,6 +98,7 @@ class LinkerRun(BaseModel):
     rule_stats: dict = Field(default_factory=dict)
     duration_ms: int | None = None
     error: str | None = None
+    status: str = "pending"
     generation: int = 0
     user_id: UUID | None = None
 

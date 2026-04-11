@@ -1142,30 +1142,31 @@ async def test_current_linker_generation_returns_max(linker_store):
 
 
 @pytest.mark.asyncio
-async def test_set_run_status_updates_in_memory_status(linker_store):
+async def test_set_run_status_persists_status_text(linker_store):
     run = await linker_store.start_linker_run(
         scope=LinkerScope.ENGAGEMENT,
         scope_id="eng1",
         mode=LinkerMode.RULES_ONLY,
         user_id=None,
     )
-    # Task 18 migration v4 will add persistent status_text; until then
-    # the status string lives in an in-memory dict on the store.
+    # Fresh rows default to status='pending' via start_linker_run INSERT.
+    assert run.status == "pending"
+
+    # Migration v4 added linker_run.status_text; set_run_status now
+    # persists through to the column so a subsequent fetch sees it.
     await linker_store.set_run_status(
         run.id, "extracting entities", user_id=None
     )
-    assert linker_store._run_status[run.id] == "extracting entities"
+    runs = await linker_store.fetch_linker_runs(user_id=None)
+    assert len(runs) == 1
+    assert runs[0].id == run.id
+    assert runs[0].status == "extracting entities"
 
     await linker_store.set_run_status(
         run.id, "linking relations", user_id=None
     )
-    assert linker_store._run_status[run.id] == "linking relations"
-
-    # fetch_linker_runs still returns the row cleanly even though the
-    # v3 schema cannot persist the status string
     runs = await linker_store.fetch_linker_runs(user_id=None)
-    assert len(runs) == 1
-    assert runs[0].id == run.id
+    assert runs[0].status == "linking relations"
 
 
 @pytest.mark.asyncio

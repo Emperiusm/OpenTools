@@ -104,10 +104,10 @@ def _row_to_relation(row: aiosqlite.Row) -> FindingRelation:
 def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
     """Convert an aiosqlite.Row from linker_run to a LinkerRun model.
 
-    Note: migration v3 does not include a status_text column, and the
-    LinkerRun pydantic model does not have a ``status`` field today.
-    Task 18 introduces migration v4 to add persisted status text; until
-    then, in-memory tracking is kept separately on AsyncChainStore.
+    Migration v4 added the ``status_text`` column, which is surfaced on
+    the ``LinkerRun.status`` field. Legacy rows (pre-v4) are backfilled
+    to 'done'/'failed'/'unknown' during migration; any row that is still
+    NULL here falls back to 'pending'.
     """
     import orjson
 
@@ -118,6 +118,13 @@ def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
             rule_stats = orjson.loads(raw)
         except Exception:
             rule_stats = {}
+
+    # status_text exists after migration v4; guard against test fixtures
+    # that might exercise an older schema by using dict-style get.
+    try:
+        status_text = row["status_text"]
+    except (IndexError, KeyError):
+        status_text = None
 
     return LinkerRun(
         id=row["id"],
@@ -144,6 +151,7 @@ def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
         rule_stats=rule_stats,
         duration_ms=row["duration_ms"],
         error=row["error"],
+        status=status_text or "pending",
         generation=row["generation"],
         user_id=row["user_id"],
     )
@@ -193,11 +201,6 @@ class AsyncChainStore:
         self._initialized = False
         # Transaction depth tracker for nested savepoints
         self._txn_depth = 0
-        # In-memory linker run status tracking. The v3 linker_run schema
-        # has no status column yet — Task 18's migration v4 will add
-        # ``status_text``. Until then, set_run_status writes here so that
-        # behavior is observable within a single process/session.
-        self._run_status: dict[str, str] = {}
 
     async def initialize(self) -> None:
         """Open the connection (if owning), apply pragmas, run migrations.
@@ -887,10 +890,10 @@ class AsyncChainStore:
                 entities_extracted, relations_created, relations_updated,
                 relations_skipped_sticky, extraction_cache_hits,
                 extraction_cache_misses, llm_calls_made, llm_cache_hits,
-                llm_cache_misses, generation
+                llm_cache_misses, status_text, generation
             )
             VALUES (
-                ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'pending',
                 (SELECT COALESCE(MAX(generation), 0) + 1 FROM linker_run)
             )
             """,
@@ -910,13 +913,18 @@ class AsyncChainStore:
     async def set_run_status(
         self, run_id: str, status: str, *, user_id
     ) -> None:
-        """Record a human-readable status string for a linker run.
+        """Persist a human-readable status string for a linker run.
 
-        v3 schema has no column to persist this; Task 18 adds
-        ``status_text`` via migration v4. Until then, stash the value in
-        an in-memory dict so behavior is observable within a session.
+        Writes to the ``linker_run.status_text`` column added by
+        migration v4. The CLI backend is single-user so user_id is
+        accepted but ignored for the WHERE clause.
         """
-        self._run_status[run_id] = status
+        await self._conn.execute(
+            "UPDATE linker_run SET status_text = ? WHERE id = ?",
+            (status, run_id),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
 
     @require_initialized
     async def finish_linker_run(
