@@ -101,27 +101,34 @@ async def _get_stores_async() -> tuple[EngagementStore, "AsyncChainStore"]:
 
 
 @app.command()
-def status() -> None:
+@_async_command
+async def status() -> None:
     """Show chain data statistics (entity count, relation count, last run)."""
-    _engagement_store, chain_store = _get_stores()
-    ent_row = chain_store.execute_one("SELECT COUNT(*) FROM entity")
-    rel_row = chain_store.execute_one("SELECT COUNT(*) FROM finding_relation")
-    run_row = chain_store.execute_one(
-        "SELECT id, started_at, findings_processed, relations_created FROM linker_run ORDER BY started_at DESC LIMIT 1"
-    )
+    _engagement_store, chain_store = await _get_stores_async()
+    try:
+        entities_list = await chain_store.list_entities(
+            user_id=None, limit=1_000_000,
+        )
+        relations = await chain_store.fetch_relations_in_scope(
+            user_id=None, statuses=None,
+        )
+        runs = await chain_store.fetch_linker_runs(user_id=None, limit=1)
 
-    table = Table(title="Chain Status")
-    table.add_column("Metric")
-    table.add_column("Value", justify="right")
-    table.add_row("Entities", str(ent_row[0] if ent_row else 0))
-    table.add_row("Relations", str(rel_row[0] if rel_row else 0))
-    if run_row:
-        table.add_row("Last linker run", f"{run_row['id']} at {run_row['started_at']}")
-        table.add_row("  Findings processed", str(run_row["findings_processed"]))
-        table.add_row("  Relations created", str(run_row["relations_created"]))
-    else:
-        table.add_row("Last linker run", "never")
-    console.print(table)
+        table = Table(title="Chain Status")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_row("Entities", str(len(entities_list)))
+        table.add_row("Relations", str(len(relations)))
+        if runs:
+            run = runs[0]
+            table.add_row("Last linker run", f"{run.id} at {run.started_at}")
+            table.add_row("  Findings processed", str(run.findings_processed))
+            table.add_row("  Relations created", str(run.relations_created))
+        else:
+            table.add_row("Last linker run", "never")
+        console.print(table)
+    finally:
+        await chain_store.close()
 
 
 @app.command()
@@ -184,33 +191,28 @@ async def rebuild(
 
 
 @app.command()
-def entities(
+@_async_command
+async def entities(
     type_: str | None = typer.Option(None, "--type", help="Filter by entity type"),
     limit: int = typer.Option(50, "--limit", help="Max rows"),
 ) -> None:
     """List entities."""
-    _engagement_store, chain_store = _get_stores()
-    if type_:
-        rows = chain_store.execute_all(
-            "SELECT id, type, canonical_value, mention_count FROM entity "
-            "WHERE type = ? ORDER BY mention_count DESC LIMIT ?",
-            (type_, limit),
-        )
-    else:
-        rows = chain_store.execute_all(
-            "SELECT id, type, canonical_value, mention_count FROM entity "
-            "ORDER BY mention_count DESC LIMIT ?",
-            (limit,),
+    _engagement_store, chain_store = await _get_stores_async()
+    try:
+        rows = await chain_store.list_entities(
+            user_id=None, entity_type=type_, limit=limit,
         )
 
-    table = Table(title=f"Entities{' (type=' + type_ + ')' if type_ else ''}")
-    table.add_column("ID")
-    table.add_column("Type")
-    table.add_column("Value")
-    table.add_column("Mentions", justify="right")
-    for r in rows:
-        table.add_row(r["id"], r["type"], r["canonical_value"], str(r["mention_count"]))
-    console.print(table)
+        table = Table(title=f"Entities{' (type=' + type_ + ')' if type_ else ''}")
+        table.add_column("ID")
+        table.add_column("Type")
+        table.add_column("Value")
+        table.add_column("Mentions", justify="right")
+        for r in rows:
+            table.add_row(r.id, r.type, r.canonical_value, str(r.mention_count))
+        console.print(table)
+    finally:
+        await chain_store.close()
 
 
 @app.command()
