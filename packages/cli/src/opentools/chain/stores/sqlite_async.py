@@ -20,12 +20,17 @@ from typing import AsyncIterator, Iterable
 
 import aiosqlite
 
-from opentools.chain.models import Entity, EntityMention
+from opentools.chain.models import (
+    Entity,
+    EntityMention,
+    FindingRelation,
+    RelationReason,
+)
 from opentools.chain.stores._common import (
     StoreNotInitialized,
     require_initialized,
 )
-from opentools.chain.types import MentionField
+from opentools.chain.types import MentionField, RelationStatus
 from opentools.engagement.schema import migrate_async
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,39 @@ def _row_to_mention(row: aiosqlite.Row) -> EntityMention:
         extractor=row["extractor"],
         confidence=row["confidence"],
         created_at=datetime.fromisoformat(row["created_at"]),
+        user_id=row["user_id"],
+    )
+
+
+def _row_to_relation(row: aiosqlite.Row) -> FindingRelation:
+    """Convert an aiosqlite.Row to a FindingRelation model."""
+    import orjson
+
+    reasons = [
+        RelationReason.model_validate(r)
+        for r in orjson.loads(row["reasons_json"])
+    ]
+    conf_reasons = None
+    if row["confirmed_at_reasons_json"]:
+        conf_reasons = [
+            RelationReason.model_validate(r)
+            for r in orjson.loads(row["confirmed_at_reasons_json"])
+        ]
+    return FindingRelation(
+        id=row["id"],
+        source_finding_id=row["source_finding_id"],
+        target_finding_id=row["target_finding_id"],
+        weight=row["weight"],
+        weight_model_version=row["weight_model_version"],
+        status=RelationStatus(row["status"]),
+        symmetric=bool(row["symmetric"]),
+        reasons=reasons,
+        llm_rationale=row["llm_rationale"],
+        llm_relation_type=row["llm_relation_type"],
+        llm_confidence=row["llm_confidence"],
+        confirmed_at_reasons=conf_reasons,
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
         user_id=row["user_id"],
     )
 
@@ -417,3 +455,164 @@ class AsyncChainStore:
         ) as cur:
             rows = await cur.fetchall()
         return [(row["id"], row["engagement_id"]) for row in rows]
+
+    # ─── Relation CRUD ───────────────────────────────────────────────────
+
+    @require_initialized
+    async def upsert_relations_bulk(
+        self, relations: Iterable[FindingRelation], *, user_id
+    ) -> tuple[int, int]:
+        import orjson
+
+        rel_list = list(relations)
+        if not rel_list:
+            return (0, 0)
+
+        created_count = 0
+        updated_count = 0
+
+        for r in rel_list:
+            async with self._conn.execute(
+                "SELECT status FROM finding_relation WHERE id = ?", (r.id,)
+            ) as cursor:
+                existing = await cursor.fetchone()
+            is_update = existing is not None
+
+            reasons_json = orjson.dumps(
+                [rr.model_dump(mode="json") for rr in r.reasons]
+            )
+            confirmed_json = None
+            if r.confirmed_at_reasons is not None:
+                confirmed_json = orjson.dumps(
+                    [rr.model_dump(mode="json") for rr in r.confirmed_at_reasons]
+                )
+
+            await self._conn.execute(
+                """
+                INSERT INTO finding_relation (
+                    id, source_finding_id, target_finding_id, weight,
+                    weight_model_version, status, symmetric, reasons_json,
+                    llm_rationale, llm_relation_type, llm_confidence,
+                    confirmed_at_reasons_json, created_at, updated_at, user_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    weight = excluded.weight,
+                    weight_model_version = excluded.weight_model_version,
+                    status = CASE
+                        WHEN finding_relation.status IN ('user_confirmed', 'user_rejected')
+                        THEN finding_relation.status
+                        ELSE excluded.status
+                    END,
+                    symmetric = excluded.symmetric,
+                    reasons_json = excluded.reasons_json,
+                    llm_rationale = excluded.llm_rationale,
+                    llm_relation_type = excluded.llm_relation_type,
+                    llm_confidence = excluded.llm_confidence,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    r.id, r.source_finding_id, r.target_finding_id, r.weight,
+                    r.weight_model_version, r.status.value,
+                    int(r.symmetric), reasons_json,
+                    r.llm_rationale, r.llm_relation_type, r.llm_confidence,
+                    confirmed_json, r.created_at.isoformat(),
+                    r.updated_at.isoformat(),
+                    str(r.user_id) if r.user_id else None,
+                ),
+            )
+
+            if is_update:
+                updated_count += 1
+            else:
+                created_count += 1
+
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+        return (created_count, updated_count)
+
+    @require_initialized
+    async def relations_for_finding(
+        self, finding_id: str, *, user_id
+    ) -> list[FindingRelation]:
+        async with self._conn.execute(
+            "SELECT * FROM finding_relation "
+            "WHERE source_finding_id = ? OR target_finding_id = ?",
+            (finding_id, finding_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_relation(row) for row in rows]
+
+    @require_initialized
+    async def fetch_relations_in_scope(
+        self,
+        *,
+        user_id,
+        statuses: set[RelationStatus] | None = None,
+    ) -> list[FindingRelation]:
+        sql = "SELECT * FROM finding_relation"
+        params: list = []
+        if statuses:
+            placeholders = ",".join("?" * len(statuses))
+            sql += f" WHERE status IN ({placeholders})"
+            params.extend(s.value for s in statuses)
+        async with self._conn.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_relation(row) for row in rows]
+
+    async def stream_relations_in_scope(
+        self,
+        *,
+        user_id,
+        statuses: set[RelationStatus] | None = None,
+    ) -> AsyncIterator[FindingRelation]:
+        # Manual init check — @require_initialized can't wrap async
+        # generators (it awaits the wrapped coroutine, which a generator
+        # isn't). Keep the error message consistent with the decorator.
+        if not self._initialized:
+            raise StoreNotInitialized(
+                "AsyncChainStore.stream_relations_in_scope called before "
+                "initialize() or after close()"
+            )
+        sql = "SELECT * FROM finding_relation"
+        params: list = []
+        if statuses:
+            placeholders = ",".join("?" * len(statuses))
+            sql += f" WHERE status IN ({placeholders})"
+            params.extend(s.value for s in statuses)
+        async with self._conn.execute(sql, tuple(params)) as cursor:
+            async for row in cursor:
+                yield _row_to_relation(row)
+
+    @require_initialized
+    async def apply_link_classification(
+        self,
+        *,
+        relation_id: str,
+        status: RelationStatus,
+        rationale: str,
+        relation_type: str,
+        confidence: float,
+        user_id,
+    ) -> None:
+        from datetime import datetime as _dt, timezone as _tz
+
+        await self._conn.execute(
+            """
+            UPDATE finding_relation
+            SET status = ?, llm_rationale = ?, llm_relation_type = ?,
+                llm_confidence = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status.value,
+                rationale,
+                relation_type,
+                confidence,
+                _dt.now(_tz.utc).isoformat(),
+                relation_id,
+            ),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()

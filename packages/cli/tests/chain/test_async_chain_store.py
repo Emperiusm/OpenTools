@@ -4,10 +4,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from opentools.chain.models import Entity, EntityMention
+from opentools.chain.models import (
+    Entity,
+    EntityMention,
+    FindingRelation,
+    RelationReason,
+)
 from opentools.chain.stores._common import StoreNotInitialized
 from opentools.chain.stores.sqlite_async import AsyncChainStore
-from opentools.chain.types import MentionField
+from opentools.chain.types import MentionField, RelationStatus
 
 
 @pytest.mark.asyncio
@@ -568,6 +573,265 @@ async def test_fetch_mentions_with_engagement_returns_mention_engagement_pairs(
         "e1", user_id=None
     )
     assert set(pairs) == {("m1", "engA"), ("m2", "engB")}
+
+
+# --- Relation CRUD ---
+
+
+@pytest_asyncio.fixture
+async def relation_store(tmp_path):
+    store = AsyncChainStore(db_path=tmp_path / "chain.db")
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+def _make_relation(
+    *,
+    id: str,
+    source_finding_id: str,
+    target_finding_id: str,
+    weight: float = 0.75,
+    status: RelationStatus = RelationStatus.CANDIDATE,
+    symmetric: bool = False,
+    llm_rationale: str | None = None,
+    llm_relation_type: str | None = None,
+    llm_confidence: float | None = None,
+) -> FindingRelation:
+    now = datetime.now(timezone.utc)
+    return FindingRelation(
+        id=id,
+        source_finding_id=source_finding_id,
+        target_finding_id=target_finding_id,
+        weight=weight,
+        weight_model_version="additive_v1",
+        status=status,
+        symmetric=symmetric,
+        reasons=[
+            RelationReason(
+                rule="shared_host",
+                weight_contribution=weight,
+                idf_factor=None,
+                details={},
+            )
+        ],
+        llm_rationale=llm_rationale,
+        llm_relation_type=llm_relation_type,
+        llm_confidence=llm_confidence,
+        confirmed_at_reasons=None,
+        created_at=now,
+        updated_at=now,
+        user_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_relations_bulk_empty_returns_zero_zero(relation_store):
+    result = await relation_store.upsert_relations_bulk([], user_id=None)
+    assert result == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_upsert_relations_bulk_inserts_new_relations(relation_store):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+    await _seed_finding(relation_store, finding_id="fc")
+
+    relations = [
+        _make_relation(id="r1", source_finding_id="fa", target_finding_id="fb"),
+        _make_relation(id="r2", source_finding_id="fa", target_finding_id="fc"),
+    ]
+    created, updated = await relation_store.upsert_relations_bulk(
+        relations, user_id=None
+    )
+    assert (created, updated) == (2, 0)
+
+    got = await relation_store.relations_for_finding("fa", user_id=None)
+    assert {r.id for r in got} == {"r1", "r2"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_relations_bulk_updates_existing(relation_store):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+
+    initial = _make_relation(
+        id="r1", source_finding_id="fa", target_finding_id="fb", weight=0.5
+    )
+    await relation_store.upsert_relations_bulk([initial], user_id=None)
+
+    bumped = _make_relation(
+        id="r1", source_finding_id="fa", target_finding_id="fb", weight=0.9
+    )
+    created, updated = await relation_store.upsert_relations_bulk(
+        [bumped], user_id=None
+    )
+    assert (created, updated) == (0, 1)
+
+    got = await relation_store.relations_for_finding("fa", user_id=None)
+    assert len(got) == 1
+    assert got[0].weight == 0.9
+
+
+@pytest.mark.asyncio
+async def test_upsert_relations_bulk_preserves_user_confirmed_status(
+    relation_store,
+):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+
+    confirmed = _make_relation(
+        id="r1",
+        source_finding_id="fa",
+        target_finding_id="fb",
+        status=RelationStatus.USER_CONFIRMED,
+    )
+    await relation_store.upsert_relations_bulk([confirmed], user_id=None)
+
+    # Try to downgrade status to candidate via upsert
+    resuggested = _make_relation(
+        id="r1",
+        source_finding_id="fa",
+        target_finding_id="fb",
+        status=RelationStatus.CANDIDATE,
+        weight=0.3,
+    )
+    created, updated = await relation_store.upsert_relations_bulk(
+        [resuggested], user_id=None
+    )
+    assert (created, updated) == (0, 1)
+
+    got = await relation_store.relations_for_finding("fa", user_id=None)
+    assert len(got) == 1
+    # Status must still be user_confirmed (sticky), but weight updated
+    assert got[0].status == RelationStatus.USER_CONFIRMED
+    assert got[0].weight == 0.3
+
+
+@pytest.mark.asyncio
+async def test_relations_for_finding_matches_source_or_target(relation_store):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+    await _seed_finding(relation_store, finding_id="fc")
+
+    relations = [
+        _make_relation(id="r1", source_finding_id="fa", target_finding_id="fb"),
+        _make_relation(id="r2", source_finding_id="fc", target_finding_id="fb"),
+    ]
+    await relation_store.upsert_relations_bulk(relations, user_id=None)
+
+    got = await relation_store.relations_for_finding("fb", user_id=None)
+    # fb appears as target in both
+    assert {r.id for r in got} == {"r1", "r2"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_relations_in_scope_no_filter_returns_all(relation_store):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+    await _seed_finding(relation_store, finding_id="fc")
+
+    await relation_store.upsert_relations_bulk(
+        [
+            _make_relation(
+                id="r1",
+                source_finding_id="fa",
+                target_finding_id="fb",
+                status=RelationStatus.CANDIDATE,
+            ),
+            _make_relation(
+                id="r2",
+                source_finding_id="fa",
+                target_finding_id="fc",
+                status=RelationStatus.AUTO_CONFIRMED,
+            ),
+        ],
+        user_id=None,
+    )
+
+    got = await relation_store.fetch_relations_in_scope(user_id=None)
+    assert {r.id for r in got} == {"r1", "r2"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_relations_in_scope_filters_by_status(relation_store):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+    await _seed_finding(relation_store, finding_id="fc")
+
+    await relation_store.upsert_relations_bulk(
+        [
+            _make_relation(
+                id="r1",
+                source_finding_id="fa",
+                target_finding_id="fb",
+                status=RelationStatus.CANDIDATE,
+            ),
+            _make_relation(
+                id="r2",
+                source_finding_id="fa",
+                target_finding_id="fc",
+                status=RelationStatus.AUTO_CONFIRMED,
+            ),
+        ],
+        user_id=None,
+    )
+
+    got = await relation_store.fetch_relations_in_scope(
+        user_id=None, statuses={RelationStatus.AUTO_CONFIRMED}
+    )
+    assert [r.id for r in got] == ["r2"]
+
+
+@pytest.mark.asyncio
+async def test_stream_relations_in_scope_yields_rows(relation_store):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+    await _seed_finding(relation_store, finding_id="fc")
+
+    await relation_store.upsert_relations_bulk(
+        [
+            _make_relation(id="r1", source_finding_id="fa", target_finding_id="fb"),
+            _make_relation(id="r2", source_finding_id="fa", target_finding_id="fc"),
+        ],
+        user_id=None,
+    )
+
+    collected: list[FindingRelation] = []
+    async for rel in relation_store.stream_relations_in_scope(user_id=None):
+        collected.append(rel)
+
+    assert {r.id for r in collected} == {"r1", "r2"}
+
+
+@pytest.mark.asyncio
+async def test_apply_link_classification_updates_row(relation_store):
+    await _seed_finding(relation_store, finding_id="fa")
+    await _seed_finding(relation_store, finding_id="fb")
+
+    await relation_store.upsert_relations_bulk(
+        [_make_relation(id="r1", source_finding_id="fa", target_finding_id="fb")],
+        user_id=None,
+    )
+
+    await relation_store.apply_link_classification(
+        relation_id="r1",
+        status=RelationStatus.AUTO_CONFIRMED,
+        rationale="shared infrastructure",
+        relation_type="lateral_movement",
+        confidence=0.82,
+        user_id=None,
+    )
+
+    got = await relation_store.relations_for_finding("fa", user_id=None)
+    assert len(got) == 1
+    r = got[0]
+    assert r.status == RelationStatus.AUTO_CONFIRMED
+    assert r.llm_rationale == "shared infrastructure"
+    assert r.llm_relation_type == "lateral_movement"
+    assert r.llm_confidence == 0.82
 
 
 @pytest.mark.asyncio
