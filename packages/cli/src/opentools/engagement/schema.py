@@ -279,6 +279,21 @@ MIGRATION_STATEMENTS: dict[int, list[str]] = {
             PRIMARY KEY (finding_id, parser_name)
         )""",
     ],
+    4: [
+        # Add status_text to linker_run
+        "ALTER TABLE linker_run ADD COLUMN status_text TEXT",
+        # Backfill legacy rows
+        """UPDATE linker_run
+        SET status_text = CASE
+            WHEN error IS NOT NULL THEN 'failed'
+            WHEN finished_at IS NOT NULL THEN 'done'
+            ELSE 'unknown'
+        END
+        WHERE status_text IS NULL""",
+        # Add user_id to cache tables (spec G37)
+        "ALTER TABLE extraction_cache ADD COLUMN user_id TEXT",
+        "ALTER TABLE llm_link_cache ADD COLUMN user_id TEXT",
+    ],
 }
 
 
@@ -315,8 +330,13 @@ def _migration_v3(conn: sqlite3.Connection) -> None:
     _apply_statements(conn, 3)
 
 
+def _migration_v4(conn: sqlite3.Connection) -> None:
+    """Add status_text to linker_run, user_id to cache tables (spec G37)."""
+    _apply_statements(conn, 4)
+
+
 # Registry of all migrations keyed by version number
-MIGRATIONS: dict = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3}
+MIGRATIONS: dict = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3, 4: _migration_v4}
 
 # The highest version number we know about
 LATEST_VERSION: int = max(MIGRATIONS.keys())
