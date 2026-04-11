@@ -1049,19 +1049,22 @@ class AsyncChainStore:
 
     # ─── LLM caches ──────────────────────────────────────────────────────
     #
-    # user_id is accepted for interface compatibility with the protocol but
-    # is NOT yet enforced in SQL — the v3 cache tables have no user_id
-    # column. Task 18's migration v4 adds the column and these methods
-    # will then filter / populate it. Until then all rows are globally
-    # shared (matching historical CLI single-user behaviour).
+    # Cache rows are user-scoped (spec G37) to prevent cross-user side
+    # channel leaks. Migration v4 added the user_id column to both
+    # extraction_cache and llm_link_cache. The filter pattern
+    # ``(user_id IS ? OR user_id = ?)`` works in SQLite: when the
+    # placeholder is bound to None, ``IS NULL`` matches NULL rows; when
+    # bound to a string, ``= ?`` matches that exact user.
 
     @require_initialized
     async def get_extraction_cache(
         self, cache_key: str, *, user_id
     ) -> bytes | None:
+        uid = str(user_id) if user_id else None
         async with self._conn.execute(
-            "SELECT result_json FROM extraction_cache WHERE cache_key = ?",
-            (cache_key,),
+            "SELECT result_json FROM extraction_cache "
+            "WHERE cache_key = ? AND (user_id IS ? OR user_id = ?)",
+            (cache_key, uid, uid),
         ) as cursor:
             row = await cursor.fetchone()
         return bytes(row["result_json"]) if row else None
@@ -1079,17 +1082,19 @@ class AsyncChainStore:
     ) -> None:
         from datetime import datetime as _dt, timezone as _tz
 
+        uid = str(user_id) if user_id else None
         await self._conn.execute(
             """
             INSERT INTO extraction_cache
                 (cache_key, provider, model, schema_version, result_json,
-                 created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 provider = excluded.provider,
                 model = excluded.model,
                 schema_version = excluded.schema_version,
-                result_json = excluded.result_json
+                result_json = excluded.result_json,
+                user_id = excluded.user_id
             """,
             (
                 cache_key,
@@ -1098,6 +1103,7 @@ class AsyncChainStore:
                 schema_version,
                 result_json,
                 _dt.now(_tz.utc).isoformat(),
+                uid,
             ),
         )
         if self._txn_depth == 0:
@@ -1107,10 +1113,11 @@ class AsyncChainStore:
     async def get_llm_link_cache(
         self, cache_key: str, *, user_id
     ) -> bytes | None:
+        uid = str(user_id) if user_id else None
         async with self._conn.execute(
             "SELECT classification_json FROM llm_link_cache "
-            "WHERE cache_key = ?",
-            (cache_key,),
+            "WHERE cache_key = ? AND (user_id IS ? OR user_id = ?)",
+            (cache_key, uid, uid),
         ) as cursor:
             row = await cursor.fetchone()
         return bytes(row["classification_json"]) if row else None
@@ -1128,17 +1135,19 @@ class AsyncChainStore:
     ) -> None:
         from datetime import datetime as _dt, timezone as _tz
 
+        uid = str(user_id) if user_id else None
         await self._conn.execute(
             """
             INSERT INTO llm_link_cache
                 (cache_key, provider, model, schema_version,
-                 classification_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 classification_json, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 provider = excluded.provider,
                 model = excluded.model,
                 schema_version = excluded.schema_version,
-                classification_json = excluded.classification_json
+                classification_json = excluded.classification_json,
+                user_id = excluded.user_id
             """,
             (
                 cache_key,
@@ -1147,6 +1156,7 @@ class AsyncChainStore:
                 schema_version,
                 classification_json,
                 _dt.now(_tz.utc).isoformat(),
+                uid,
             ),
         )
         if self._txn_depth == 0:
