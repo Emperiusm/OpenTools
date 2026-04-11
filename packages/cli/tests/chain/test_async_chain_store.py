@@ -863,3 +863,205 @@ async def test_entity_crud_respects_transaction(tmp_path):
         assert await store.get_entity("base", user_id=None) is not None
     finally:
         await store.close()
+
+
+# --- Linker queries ---
+
+
+@pytest_asyncio.fixture
+async def linker_store(tmp_path):
+    store = AsyncChainStore(db_path=tmp_path / "chain.db")
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_fetch_candidate_partners_empty_entity_ids_returns_empty_dict(
+    linker_store,
+):
+    got = await linker_store.fetch_candidate_partners(
+        finding_id="fa",
+        entity_ids=set(),
+        user_id=None,
+        common_entity_threshold=100,
+    )
+    assert got == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_candidate_partners_returns_partner_mapping(linker_store):
+    await _seed_finding(linker_store, finding_id="fa")
+    await _seed_finding(linker_store, finding_id="fb")
+    # Shared entity e1 with mention_count=2
+    await linker_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="shared", mention_count=2),
+        user_id=None,
+    )
+    await linker_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1", finding_id="fa"),
+            _make_mention(id="m2", entity_id="e1", finding_id="fb"),
+        ],
+        user_id=None,
+    )
+
+    partners = await linker_store.fetch_candidate_partners(
+        finding_id="fa",
+        entity_ids={"e1"},
+        user_id=None,
+        common_entity_threshold=10,
+    )
+    assert "fb" in partners
+    assert partners["fb"] == {"e1"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_candidate_partners_respects_common_entity_threshold(
+    linker_store,
+):
+    await _seed_finding(linker_store, finding_id="fa")
+    await _seed_finding(linker_store, finding_id="fb")
+    # Entity with mention_count=50 — above threshold of 10
+    await linker_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="common", mention_count=50),
+        user_id=None,
+    )
+    await linker_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1", finding_id="fa"),
+            _make_mention(id="m2", entity_id="e1", finding_id="fb"),
+        ],
+        user_id=None,
+    )
+
+    partners = await linker_store.fetch_candidate_partners(
+        finding_id="fa",
+        entity_ids={"e1"},
+        user_id=None,
+        common_entity_threshold=10,
+    )
+    assert partners == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_candidate_partners_excludes_same_finding(linker_store):
+    await _seed_finding(linker_store, finding_id="fa")
+    await linker_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1", mention_count=1),
+        user_id=None,
+    )
+    await linker_store.add_mentions_bulk(
+        [_make_mention(id="m1", entity_id="e1", finding_id="fa")],
+        user_id=None,
+    )
+
+    partners = await linker_store.fetch_candidate_partners(
+        finding_id="fa",
+        entity_ids={"e1"},
+        user_id=None,
+        common_entity_threshold=100,
+    )
+    assert "fa" not in partners
+
+
+@pytest.mark.asyncio
+async def test_fetch_findings_by_ids_empty_returns_empty_list(linker_store):
+    got = await linker_store.fetch_findings_by_ids([], user_id=None)
+    assert got == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_findings_by_ids_returns_findings(linker_store):
+    await _seed_finding(linker_store, finding_id="fa")
+    await _seed_finding(linker_store, finding_id="fb")
+    await _seed_finding(linker_store, finding_id="fc")
+
+    got = await linker_store.fetch_findings_by_ids(
+        ["fa", "fc"], user_id=None
+    )
+    assert {f.id for f in got} == {"fa", "fc"}
+
+
+@pytest.mark.asyncio
+async def test_count_findings_in_scope_returns_count(linker_store):
+    await _seed_finding(linker_store, engagement_id="engA", finding_id="fa")
+    await _seed_finding(linker_store, engagement_id="engA", finding_id="fb")
+    await _seed_finding(linker_store, engagement_id="engB", finding_id="fc")
+
+    total = await linker_store.count_findings_in_scope(user_id=None)
+    assert total == 3
+
+    eng_a_count = await linker_store.count_findings_in_scope(
+        user_id=None, engagement_id="engA"
+    )
+    assert eng_a_count == 2
+
+
+@pytest.mark.asyncio
+async def test_count_findings_in_scope_excludes_deleted(linker_store):
+    await _seed_finding(linker_store, finding_id="fa")
+    await _seed_finding(linker_store, finding_id="fb")
+    # Soft-delete fb
+    now = datetime.now(timezone.utc).isoformat()
+    await linker_store._conn.execute(
+        "UPDATE findings SET deleted_at = ? WHERE id = ?", (now, "fb")
+    )
+    await linker_store._conn.commit()
+
+    total = await linker_store.count_findings_in_scope(user_id=None)
+    assert total == 1
+
+
+@pytest.mark.asyncio
+async def test_compute_avg_idf_scope_total_zero_returns_one(linker_store):
+    result = await linker_store.compute_avg_idf(
+        scope_total=0, user_id=None
+    )
+    assert result == 1.0
+
+
+@pytest.mark.asyncio
+async def test_compute_avg_idf_with_entities_returns_finite_positive(
+    linker_store,
+):
+    import math
+
+    await linker_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1", mention_count=1),
+        user_id=None,
+    )
+    await linker_store.upsert_entity(
+        _make_entity(id="e2", canonical_value="v2", mention_count=3),
+        user_id=None,
+    )
+    result = await linker_store.compute_avg_idf(
+        scope_total=10, user_id=None
+    )
+    assert isinstance(result, float)
+    assert math.isfinite(result)
+
+
+@pytest.mark.asyncio
+async def test_entities_for_finding_returns_linked_entities(linker_store):
+    await _seed_finding(linker_store, finding_id="fa")
+    await linker_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1"), user_id=None
+    )
+    await linker_store.upsert_entity(
+        _make_entity(id="e2", canonical_value="v2"), user_id=None
+    )
+    await linker_store.upsert_entity(
+        _make_entity(id="e3", canonical_value="v3"), user_id=None
+    )
+    await linker_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1", finding_id="fa"),
+            _make_mention(id="m2", entity_id="e2", finding_id="fa"),
+        ],
+        user_id=None,
+    )
+    got = await linker_store.entities_for_finding("fa", user_id=None)
+    assert {e.id for e in got} == {"e1", "e2"}

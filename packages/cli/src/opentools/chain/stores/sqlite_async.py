@@ -616,3 +616,163 @@ class AsyncChainStore:
         )
         if self._txn_depth == 0:
             await self._conn.commit()
+
+    # ─── Linker queries ──────────────────────────────────────────────────
+
+    @require_initialized
+    async def fetch_candidate_partners(
+        self,
+        *,
+        finding_id: str,
+        entity_ids: set[str],
+        user_id,
+        common_entity_threshold: int,
+    ) -> dict[str, set[str]]:
+        from opentools.chain.stores._common import pad_in_clause
+
+        if not entity_ids:
+            return {}
+
+        ids_list = list(entity_ids)
+        if len(ids_list) > 500:
+            result: dict[str, set[str]] = {}
+            for i in range(0, len(ids_list), 500):
+                chunk = ids_list[i : i + 500]
+                partial = await self.fetch_candidate_partners(
+                    finding_id=finding_id,
+                    entity_ids=set(chunk),
+                    user_id=user_id,
+                    common_entity_threshold=common_entity_threshold,
+                )
+                for fid, eids in partial.items():
+                    result.setdefault(fid, set()).update(eids)
+            return result
+
+        padded = pad_in_clause(ids_list, min_size=4)
+        placeholders = ",".join("?" * len(padded))
+
+        sql = f"""
+            SELECT DISTINCT m.finding_id, m.entity_id
+            FROM entity_mention m
+            JOIN entity e ON e.id = m.entity_id
+            WHERE m.entity_id IN ({placeholders})
+              AND m.finding_id != ?
+              AND e.mention_count <= ?
+        """
+        params = tuple(padded) + (finding_id, common_entity_threshold)
+
+        partners: dict[str, set[str]] = {}
+        async with self._conn.execute(sql, params) as cursor:
+            async for row in cursor:
+                partners.setdefault(row["finding_id"], set()).add(
+                    row["entity_id"]
+                )
+        return partners
+
+    @require_initialized
+    async def fetch_findings_by_ids(
+        self, finding_ids: Iterable[str], *, user_id
+    ) -> list:
+        from opentools.models import Finding, FindingStatus, Severity
+
+        ids_list = list(finding_ids)
+        if not ids_list:
+            return []
+
+        placeholders = ",".join("?" * len(ids_list))
+        async with self._conn.execute(
+            f"""
+            SELECT id, engagement_id, tool, severity, status, title,
+                   description, file_path, line_start, line_end, evidence,
+                   cwe, cvss, remediation, phase, false_positive,
+                   created_at, deleted_at
+            FROM findings
+            WHERE id IN ({placeholders}) AND deleted_at IS NULL
+            """,
+            tuple(ids_list),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        findings: list = []
+        for row in rows:
+            try:
+                findings.append(
+                    Finding(
+                        id=row["id"],
+                        engagement_id=row["engagement_id"],
+                        tool=row["tool"],
+                        severity=Severity(row["severity"]),
+                        status=(
+                            FindingStatus(row["status"])
+                            if row["status"]
+                            else FindingStatus.DISCOVERED
+                        ),
+                        title=row["title"],
+                        description=row["description"] or "",
+                        file_path=row["file_path"],
+                        line_start=row["line_start"],
+                        line_end=row["line_end"],
+                        evidence=row["evidence"],
+                        cwe=row["cwe"],
+                        cvss=row["cvss"],
+                        remediation=row["remediation"],
+                        phase=row["phase"],
+                        false_positive=bool(row["false_positive"]),
+                        created_at=datetime.fromisoformat(row["created_at"]),
+                    )
+                )
+            except Exception:
+                continue
+        return findings
+
+    @require_initialized
+    async def count_findings_in_scope(
+        self, *, user_id, engagement_id: str | None = None
+    ) -> int:
+        if engagement_id is None:
+            sql = "SELECT COUNT(*) FROM findings WHERE deleted_at IS NULL"
+            params: tuple = ()
+        else:
+            sql = (
+                "SELECT COUNT(*) FROM findings "
+                "WHERE deleted_at IS NULL AND engagement_id = ?"
+            )
+            params = (engagement_id,)
+        async with self._conn.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    @require_initialized
+    async def compute_avg_idf(
+        self, *, scope_total: int, user_id
+    ) -> float:
+        if scope_total <= 0:
+            return 1.0
+        async with self._conn.execute(
+            """
+            SELECT AVG(LOG((? + 1.0) / (mention_count + 1.0)))
+            FROM entity
+            WHERE mention_count > 0
+            """,
+            (scope_total,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return 1.0
+        return float(row[0])
+
+    @require_initialized
+    async def entities_for_finding(
+        self, finding_id: str, *, user_id
+    ) -> list[Entity]:
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT e.*
+            FROM entity e
+            JOIN entity_mention m ON m.entity_id = e.id
+            WHERE m.finding_id = ?
+            """,
+            (finding_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_entity(row) for row in rows]
