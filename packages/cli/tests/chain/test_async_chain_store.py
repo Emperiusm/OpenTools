@@ -4,9 +4,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from opentools.chain.models import Entity
+from opentools.chain.models import Entity, EntityMention
 from opentools.chain.stores._common import StoreNotInitialized
 from opentools.chain.stores.sqlite_async import AsyncChainStore
+from opentools.chain.types import MentionField
 
 
 @pytest.mark.asyncio
@@ -315,6 +316,258 @@ async def test_delete_entity_removes_row(entity_store):
 async def test_delete_entity_idempotent_on_missing(entity_store):
     # Should not raise
     await entity_store.delete_entity("never-existed", user_id=None)
+
+
+# --- Mention CRUD ---
+
+
+async def _seed_finding(store, engagement_id="eng1", finding_id="f1"):
+    now = datetime.now(timezone.utc).isoformat()
+    await store._conn.execute(
+        "INSERT OR IGNORE INTO engagements (id, name, target, type, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (engagement_id, "e", "t", "assess", now, now),
+    )
+    await store._conn.execute(
+        "INSERT OR IGNORE INTO findings (id, engagement_id, tool, severity, title, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (finding_id, engagement_id, "test", "high", "t", now),
+    )
+    await store._conn.commit()
+
+
+_mention_offset_counter = {"n": 0}
+
+
+def _make_mention(
+    *,
+    id: str,
+    entity_id: str,
+    finding_id: str = "f1",
+    field: MentionField = MentionField.TITLE,
+    raw_value: str = "raw",
+    extractor: str = "test",
+    confidence: float = 0.9,
+    offset_start: int | None = None,
+) -> EntityMention:
+    # Default to a monotonically increasing offset so the
+    # (entity_id, finding_id, field, offset_start) UNIQUE constraint in
+    # entity_mention doesn't collapse mentions that only differ by id.
+    if offset_start is None:
+        _mention_offset_counter["n"] += 1
+        offset_start = _mention_offset_counter["n"]
+    return EntityMention(
+        id=id,
+        entity_id=entity_id,
+        finding_id=finding_id,
+        field=field,
+        raw_value=raw_value,
+        offset_start=offset_start,
+        offset_end=offset_start + len(raw_value),
+        extractor=extractor,
+        confidence=confidence,
+        created_at=datetime.now(timezone.utc),
+        user_id=None,
+    )
+
+
+@pytest_asyncio.fixture
+async def mention_store(tmp_path):
+    store = AsyncChainStore(db_path=tmp_path / "chain.db")
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_add_mentions_bulk_empty_returns_zero(mention_store):
+    n = await mention_store.add_mentions_bulk([], user_id=None)
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_add_mentions_bulk_inserts_and_returns_count(mention_store):
+    await _seed_finding(mention_store)
+    await mention_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="host-a"), user_id=None
+    )
+    mentions = [
+        _make_mention(id="m1", entity_id="e1"),
+        _make_mention(id="m2", entity_id="e1", field=MentionField.DESCRIPTION),
+    ]
+    n = await mention_store.add_mentions_bulk(mentions, user_id=None)
+    assert n == 2
+    got = await mention_store.mentions_for_finding("f1", user_id=None)
+    assert len(got) == 2
+
+
+@pytest.mark.asyncio
+async def test_mentions_for_finding_returns_all_mentions(mention_store):
+    await _seed_finding(mention_store, finding_id="f1")
+    await _seed_finding(mention_store, finding_id="f2")
+    await mention_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1"), user_id=None
+    )
+    await mention_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1", finding_id="f1"),
+            _make_mention(id="m2", entity_id="e1", finding_id="f1"),
+            _make_mention(id="m3", entity_id="e1", finding_id="f2"),
+        ],
+        user_id=None,
+    )
+    got = await mention_store.mentions_for_finding("f1", user_id=None)
+    assert {m.id for m in got} == {"m1", "m2"}
+    assert all(isinstance(m, EntityMention) for m in got)
+    assert all(m.field in MentionField for m in got)
+
+
+@pytest.mark.asyncio
+async def test_delete_mentions_for_finding_removes_rows_and_returns_count(
+    mention_store,
+):
+    await _seed_finding(mention_store)
+    await mention_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1"), user_id=None
+    )
+    await mention_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1"),
+            _make_mention(id="m2", entity_id="e1"),
+        ],
+        user_id=None,
+    )
+    deleted = await mention_store.delete_mentions_for_finding(
+        "f1", user_id=None
+    )
+    assert deleted == 2
+    remaining = await mention_store.mentions_for_finding("f1", user_id=None)
+    assert remaining == []
+
+
+@pytest.mark.asyncio
+async def test_recompute_mention_counts_updates_entity_count(mention_store):
+    await _seed_finding(mention_store)
+    await mention_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1", mention_count=0),
+        user_id=None,
+    )
+    await mention_store.upsert_entity(
+        _make_entity(id="e2", canonical_value="v2", mention_count=0),
+        user_id=None,
+    )
+    await mention_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1"),
+            _make_mention(id="m2", entity_id="e1"),
+            _make_mention(id="m3", entity_id="e2"),
+        ],
+        user_id=None,
+    )
+
+    await mention_store.recompute_mention_counts(["e1", "e2"], user_id=None)
+
+    e1 = await mention_store.get_entity("e1", user_id=None)
+    e2 = await mention_store.get_entity("e2", user_id=None)
+    assert e1 is not None and e1.mention_count == 2
+    assert e2 is not None and e2.mention_count == 1
+
+
+@pytest.mark.asyncio
+async def test_recompute_mention_counts_empty_is_no_op(mention_store):
+    await mention_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1", mention_count=5),
+        user_id=None,
+    )
+    await mention_store.recompute_mention_counts([], user_id=None)
+    # Untouched
+    e1 = await mention_store.get_entity("e1", user_id=None)
+    assert e1 is not None and e1.mention_count == 5
+
+
+@pytest.mark.asyncio
+async def test_rewrite_mentions_entity_id_moves_mentions(mention_store):
+    await _seed_finding(mention_store)
+    await mention_store.upsert_entity(
+        _make_entity(id="old", canonical_value="v-old"), user_id=None
+    )
+    await mention_store.upsert_entity(
+        _make_entity(id="new", canonical_value="v-new"), user_id=None
+    )
+    await mention_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="old"),
+            _make_mention(id="m2", entity_id="old"),
+        ],
+        user_id=None,
+    )
+    moved = await mention_store.rewrite_mentions_entity_id(
+        from_entity_id="old", to_entity_id="new", user_id=None
+    )
+    assert moved == 2
+    got = await mention_store.mentions_for_finding("f1", user_id=None)
+    assert {m.entity_id for m in got} == {"new"}
+
+
+@pytest.mark.asyncio
+async def test_rewrite_mentions_by_ids_moves_selected_mentions(mention_store):
+    await _seed_finding(mention_store)
+    await mention_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1"), user_id=None
+    )
+    await mention_store.upsert_entity(
+        _make_entity(id="e2", canonical_value="v2"), user_id=None
+    )
+    await mention_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1"),
+            _make_mention(id="m2", entity_id="e1"),
+            _make_mention(id="m3", entity_id="e1"),
+        ],
+        user_id=None,
+    )
+    moved = await mention_store.rewrite_mentions_by_ids(
+        mention_ids=["m1", "m3"], to_entity_id="e2", user_id=None
+    )
+    assert moved == 2
+    got = {m.id: m.entity_id for m in await mention_store.mentions_for_finding("f1", user_id=None)}
+    assert got == {"m1": "e2", "m2": "e1", "m3": "e2"}
+
+
+@pytest.mark.asyncio
+async def test_rewrite_mentions_by_ids_empty_returns_zero(mention_store):
+    n = await mention_store.rewrite_mentions_by_ids(
+        mention_ids=[], to_entity_id="anything", user_id=None
+    )
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_mentions_with_engagement_returns_mention_engagement_pairs(
+    mention_store,
+):
+    await _seed_finding(
+        mention_store, engagement_id="engA", finding_id="fA"
+    )
+    await _seed_finding(
+        mention_store, engagement_id="engB", finding_id="fB"
+    )
+    await mention_store.upsert_entity(
+        _make_entity(id="e1", canonical_value="v1"), user_id=None
+    )
+    await mention_store.add_mentions_bulk(
+        [
+            _make_mention(id="m1", entity_id="e1", finding_id="fA"),
+            _make_mention(id="m2", entity_id="e1", finding_id="fB"),
+        ],
+        user_id=None,
+    )
+    pairs = await mention_store.fetch_mentions_with_engagement(
+        "e1", user_id=None
+    )
+    assert set(pairs) == {("m1", "engA"), ("m2", "engB")}
 
 
 @pytest.mark.asyncio

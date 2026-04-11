@@ -20,11 +20,12 @@ from typing import AsyncIterator, Iterable
 
 import aiosqlite
 
-from opentools.chain.models import Entity
+from opentools.chain.models import Entity, EntityMention
 from opentools.chain.stores._common import (
     StoreNotInitialized,
     require_initialized,
 )
+from opentools.chain.types import MentionField
 from opentools.engagement.schema import migrate_async
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,23 @@ def _row_to_entity(row: aiosqlite.Row) -> Entity:
         first_seen_at=datetime.fromisoformat(row["first_seen_at"]),
         last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
         mention_count=row["mention_count"],
+        user_id=row["user_id"],
+    )
+
+
+def _row_to_mention(row: aiosqlite.Row) -> EntityMention:
+    """Convert an aiosqlite.Row to an EntityMention model."""
+    return EntityMention(
+        id=row["id"],
+        entity_id=row["entity_id"],
+        finding_id=row["finding_id"],
+        field=MentionField(row["field"]),
+        raw_value=row["raw_value"],
+        offset_start=row["offset_start"],
+        offset_end=row["offset_end"],
+        extractor=row["extractor"],
+        confidence=row["confidence"],
+        created_at=datetime.fromisoformat(row["created_at"]),
         user_id=row["user_id"],
     )
 
@@ -270,3 +288,132 @@ class AsyncChainStore:
         )
         if self._txn_depth == 0:
             await self._conn.commit()
+
+    # ─── Mention CRUD ────────────────────────────────────────────────────
+
+    @require_initialized
+    async def add_mentions_bulk(
+        self, mentions: Iterable[EntityMention], *, user_id
+    ) -> int:
+        rows = [
+            (
+                m.id,
+                m.entity_id,
+                m.finding_id,
+                m.field.value,
+                m.raw_value,
+                m.offset_start,
+                m.offset_end,
+                m.extractor,
+                m.confidence,
+                m.created_at.isoformat(),
+                str(m.user_id) if m.user_id else None,
+            )
+            for m in mentions
+        ]
+        if not rows:
+            return 0
+        await self._conn.executemany(
+            """
+            INSERT OR IGNORE INTO entity_mention
+                (id, entity_id, finding_id, field, raw_value, offset_start,
+                 offset_end, extractor, confidence, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+        return len(rows)
+
+    @require_initialized
+    async def mentions_for_finding(
+        self, finding_id: str, *, user_id
+    ) -> list[EntityMention]:
+        async with self._conn.execute(
+            "SELECT * FROM entity_mention WHERE finding_id = ?",
+            (finding_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_row_to_mention(row) for row in rows]
+
+    @require_initialized
+    async def delete_mentions_for_finding(
+        self, finding_id: str, *, user_id
+    ) -> int:
+        async with self._conn.execute(
+            "DELETE FROM entity_mention WHERE finding_id = ?",
+            (finding_id,),
+        ) as cur:
+            deleted = cur.rowcount
+        if self._txn_depth == 0:
+            await self._conn.commit()
+        return deleted
+
+    @require_initialized
+    async def recompute_mention_counts(
+        self, entity_ids: Iterable[str], *, user_id
+    ) -> None:
+        id_list = list(entity_ids)
+        if not id_list:
+            return
+        placeholders = ",".join("?" * len(id_list))
+        await self._conn.execute(
+            f"""
+            UPDATE entity
+            SET mention_count = (
+                SELECT COUNT(*) FROM entity_mention
+                WHERE entity_mention.entity_id = entity.id
+            )
+            WHERE id IN ({placeholders})
+            """,
+            tuple(id_list),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
+    async def rewrite_mentions_entity_id(
+        self, *, from_entity_id: str, to_entity_id: str, user_id
+    ) -> int:
+        async with self._conn.execute(
+            "UPDATE entity_mention SET entity_id = ? WHERE entity_id = ?",
+            (to_entity_id, from_entity_id),
+        ) as cur:
+            affected = cur.rowcount
+        if self._txn_depth == 0:
+            await self._conn.commit()
+        return affected
+
+    @require_initialized
+    async def rewrite_mentions_by_ids(
+        self, *, mention_ids: list[str], to_entity_id: str, user_id
+    ) -> int:
+        if not mention_ids:
+            return 0
+        placeholders = ",".join("?" * len(mention_ids))
+        params = (to_entity_id, *mention_ids)
+        async with self._conn.execute(
+            f"UPDATE entity_mention SET entity_id = ? WHERE id IN ({placeholders})",
+            params,
+        ) as cur:
+            affected = cur.rowcount
+        if self._txn_depth == 0:
+            await self._conn.commit()
+        return affected
+
+    @require_initialized
+    async def fetch_mentions_with_engagement(
+        self, entity_id: str, *, user_id
+    ) -> list[tuple[str, str]]:
+        async with self._conn.execute(
+            """
+            SELECT m.id, f.engagement_id
+            FROM entity_mention m
+            JOIN findings f ON f.id = m.finding_id
+            WHERE m.entity_id = ? AND f.deleted_at IS NULL
+            """,
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(row["id"], row["engagement_id"]) for row in rows]
