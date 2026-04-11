@@ -43,7 +43,6 @@ from opentools.chain.query.presets import (
     mitre_coverage,
     priv_esc_chains,
 )
-from opentools.chain.store_extensions import ChainStore
 from opentools.engagement.store import EngagementStore
 
 if TYPE_CHECKING:
@@ -56,14 +55,6 @@ console = Console()
 def _default_db_path() -> Path:
     """Return the default database path used by the CLI."""
     return Path.home() / ".opentools" / "engagements.db"
-
-
-def _get_stores() -> tuple[EngagementStore, ChainStore]:
-    db = _default_db_path()
-    db.parent.mkdir(parents=True, exist_ok=True)
-    engagement_store = EngagementStore(db_path=db)
-    chain_store = ChainStore(engagement_store._conn)
-    return engagement_store, chain_store
 
 
 def _async_command(coro_fn):
@@ -82,8 +73,8 @@ def _async_command(coro_fn):
     return _wrapper
 
 
-async def _get_stores_async() -> tuple[EngagementStore, "AsyncChainStore"]:
-    """Async variant of :func:`_get_stores`.
+async def _get_stores() -> tuple[EngagementStore, "AsyncChainStore"]:
+    """Build an :class:`EngagementStore` + :class:`AsyncChainStore` pair.
 
     Returns an :class:`EngagementStore` (sync, holds its own sqlite3
     connection) and an :class:`AsyncChainStore` (holds an aiosqlite
@@ -104,7 +95,7 @@ async def _get_stores_async() -> tuple[EngagementStore, "AsyncChainStore"]:
 @_async_command
 async def status() -> None:
     """Show chain data statistics (entity count, relation count, last run)."""
-    _engagement_store, chain_store = await _get_stores_async()
+    _engagement_store, chain_store = await _get_stores()
     try:
         entities_list = await chain_store.list_entities(
             user_id=None, limit=1_000_000,
@@ -138,10 +129,10 @@ async def rebuild(
     force: bool = typer.Option(False, "--force", help="Re-extract even unchanged findings"),
 ) -> None:
     """Re-run extraction and linking for all findings (optionally scoped to one engagement)."""
-    from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
-    from opentools.chain.linker.engine import AsyncLinkerEngine
+    from opentools.chain.extractors.pipeline import ExtractionPipeline
+    from opentools.chain.linker.engine import LinkerEngine
 
-    engagement_store, chain_store = await _get_stores_async()
+    engagement_store, chain_store = await _get_stores()
     try:
         cfg = get_chain_config()
 
@@ -160,8 +151,8 @@ async def rebuild(
             finding_ids, user_id=None,
         )
 
-        pipeline = AsyncExtractionPipeline(store=chain_store, config=cfg)
-        engine = AsyncLinkerEngine(
+        pipeline = ExtractionPipeline(store=chain_store, config=cfg)
+        engine = LinkerEngine(
             store=chain_store, config=cfg, rules=get_default_rules(cfg),
         )
 
@@ -197,7 +188,7 @@ async def entities(
     limit: int = typer.Option(50, "--limit", help="Max rows"),
 ) -> None:
     """List entities."""
-    _engagement_store, chain_store = await _get_stores_async()
+    _engagement_store, chain_store = await _get_stores()
     try:
         rows = await chain_store.list_entities(
             user_id=None, entity_type=type_, limit=limit,
@@ -225,7 +216,7 @@ async def path(
     include_candidates: bool = typer.Option(False, "--include-candidates", help="Include candidate-status edges"),
 ) -> None:
     """Run a k-shortest paths query between two endpoints."""
-    _engagement_store, chain_store = await _get_stores_async()
+    _engagement_store, chain_store = await _get_stores()
     try:
         cfg = get_chain_config()
         cache = GraphCache(store=chain_store, maxsize=4)
@@ -264,7 +255,7 @@ async def export(
     output: Path = typer.Option(..., "--output", help="Output JSON path"),
 ) -> None:
     """Export chain data to JSON."""
-    _engagement_store, chain_store = await _get_stores_async()
+    _engagement_store, chain_store = await _get_stores()
     try:
         result = await export_chain(
             store=chain_store,
@@ -288,7 +279,7 @@ async def query(
     entity_ref: str | None = typer.Option(None, "--entity", help="Required for crown-jewel preset"),
 ) -> None:
     """Run a named query preset."""
-    _engagement_store, chain_store = await _get_stores_async()
+    _engagement_store, chain_store = await _get_stores()
     try:
         cfg = get_chain_config()
         cache = GraphCache(store=chain_store, maxsize=4)

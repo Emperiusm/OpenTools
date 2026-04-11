@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 import pytest
 
 from opentools.chain.config import ChainConfig
-from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
-from opentools.chain.linker.engine import AsyncLinkerEngine, get_default_rules
+from opentools.chain.extractors.pipeline import ExtractionPipeline
+from opentools.chain.linker.engine import LinkerEngine, get_default_rules
 from opentools.chain.query.endpoints import EndpointSpec, parse_endpoint_spec
 from opentools.chain.query.engine import ChainQueryEngine
 from opentools.chain.query.graph_cache import GraphCache
@@ -26,10 +26,10 @@ async def _seed_three_linked(engagement_store, chain_store):
         engagement_store.add_finding(f)
         findings.append(f)
     cfg = ChainConfig()
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=cfg)
+    pipeline = ExtractionPipeline(store=chain_store, config=cfg)
     for f in findings:
         await pipeline.extract_for_finding(f)
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store, config=cfg, rules=get_default_rules(cfg),
     )
     ctx = await engine.make_context(user_id=None)
@@ -38,8 +38,8 @@ async def _seed_three_linked(engagement_store, chain_store):
     return findings
 
 
-async def test_query_engine_finds_path(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_query_engine_finds_path(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = await _seed_three_linked(engagement_store, chain_store)
 
     cache = GraphCache(store=chain_store, maxsize=4)
@@ -58,8 +58,8 @@ async def test_query_engine_finds_path(async_chain_stores):
     assert results[0].target_finding_id == findings[2].id
 
 
-async def test_query_engine_empty_source(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_query_engine_empty_source(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     await _seed_three_linked(engagement_store, chain_store)
 
     cache = GraphCache(store=chain_store, maxsize=4)
@@ -75,8 +75,8 @@ async def test_query_engine_empty_source(async_chain_stores):
     assert results == []
 
 
-async def test_query_engine_entity_endpoint(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_query_engine_entity_endpoint(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = await _seed_three_linked(engagement_store, chain_store)
 
     cache = GraphCache(store=chain_store, maxsize=4)

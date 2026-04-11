@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from opentools.chain.config import ChainConfig
-from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
-from opentools.chain.linker.engine import AsyncLinkerEngine, get_default_rules
+from opentools.chain.extractors.pipeline import ExtractionPipeline
+from opentools.chain.linker.engine import LinkerEngine, get_default_rules
 from opentools.chain.types import RelationStatus
 from opentools.models import Finding, FindingStatus, Severity
 
@@ -29,17 +29,17 @@ async def _seed_two_findings_sharing_host(engagement_store, chain_store):
     engagement_store.add_finding(a)
     engagement_store.add_finding(b)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(a)
     await pipeline.extract_for_finding(b)
     return a, b
 
 
-async def test_linker_creates_edge_for_shared_host(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_linker_creates_edge_for_shared_host(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store,
         config=ChainConfig(),
         rules=get_default_rules(ChainConfig()),
@@ -57,12 +57,12 @@ async def test_linker_creates_edge_for_shared_host(async_chain_stores):
     assert b.id in partner_ids
 
 
-async def test_linker_edge_status_auto_confirmed_when_over_threshold(async_chain_stores):
+async def test_linker_edge_status_auto_confirmed_when_over_threshold(engagement_store_and_chain):
     """A shared strong entity should produce weight >= 1.0 -> auto_confirmed."""
-    engagement_store, chain_store, now = async_chain_stores
+    engagement_store, chain_store, now = engagement_store_and_chain
     a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store,
         config=ChainConfig(),
         rules=get_default_rules(ChainConfig()),
@@ -75,19 +75,19 @@ async def test_linker_edge_status_auto_confirmed_when_over_threshold(async_chain
     assert any(r.status == RelationStatus.AUTO_CONFIRMED for r in rels)
 
 
-async def test_linker_no_edge_for_unrelated_findings(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_linker_no_edge_for_unrelated_findings(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     now_dt = datetime.now(timezone.utc)
     a = _finding("fnd_u1", description="unrelated one", created_at=now_dt)
     b = _finding("fnd_u2", description="unrelated two", created_at=now_dt)
     engagement_store.add_finding(a)
     engagement_store.add_finding(b)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(a)
     await pipeline.extract_for_finding(b)
 
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store,
         config=ChainConfig(),
         rules=get_default_rules(ChainConfig()),
@@ -100,12 +100,12 @@ async def test_linker_no_edge_for_unrelated_findings(async_chain_stores):
     assert rels == []
 
 
-async def test_linker_sticky_user_confirmed_preserved_on_rerun(async_chain_stores):
+async def test_linker_sticky_user_confirmed_preserved_on_rerun(engagement_store_and_chain):
     """USER_CONFIRMED status must survive a linker re-run."""
-    engagement_store, chain_store, now = async_chain_stores
+    engagement_store, chain_store, now = engagement_store_and_chain
     a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store,
         config=ChainConfig(),
         rules=get_default_rules(ChainConfig()),
@@ -134,11 +134,11 @@ async def test_linker_sticky_user_confirmed_preserved_on_rerun(async_chain_store
     assert all(r.status == RelationStatus.USER_CONFIRMED for r in rels)
 
 
-async def test_linker_run_records_stats(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_linker_run_records_stats(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store,
         config=ChainConfig(),
         rules=get_default_rules(ChainConfig()),

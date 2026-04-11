@@ -11,7 +11,7 @@ from opentools.chain.exporter import (
     export_chain,
     import_chain,
 )
-from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
+from opentools.chain.extractors.pipeline import ExtractionPipeline
 from opentools.models import Finding, FindingStatus, Severity
 
 pytestmark = pytest.mark.asyncio
@@ -25,13 +25,13 @@ async def _seed(engagement_store, chain_store):
         created_at=datetime.now(timezone.utc),
     )
     engagement_store.add_finding(f)
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(f)
     return f
 
 
-async def test_export_writes_schema_versioned_file(async_chain_stores, tmp_path):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_export_writes_schema_versioned_file(engagement_store_and_chain, tmp_path):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     await _seed(engagement_store, chain_store)
     output = tmp_path / "export.json"
     result = await export_chain(store=chain_store, output_path=output)
@@ -43,8 +43,8 @@ async def test_export_writes_schema_versioned_file(async_chain_stores, tmp_path)
     assert result.mentions_exported >= 1
 
 
-async def test_export_filtered_by_engagement(async_chain_stores, tmp_path):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_export_filtered_by_engagement(engagement_store_and_chain, tmp_path):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     await _seed(engagement_store, chain_store)
     output = tmp_path / "export_scoped.json"
     result = await export_chain(
@@ -53,8 +53,8 @@ async def test_export_filtered_by_engagement(async_chain_stores, tmp_path):
     assert result.entities_exported >= 1
 
 
-async def test_export_nonexistent_engagement_empty(async_chain_stores, tmp_path):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_export_nonexistent_engagement_empty(engagement_store_and_chain, tmp_path):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     output = tmp_path / "empty.json"
     result = await export_chain(
         store=chain_store, engagement_id="eng_nonexistent", output_path=output,
@@ -64,8 +64,8 @@ async def test_export_nonexistent_engagement_empty(async_chain_stores, tmp_path)
     assert data["entities"] == []
 
 
-async def test_import_skip_strategy_preserves_existing(async_chain_stores, tmp_path):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_import_skip_strategy_preserves_existing(engagement_store_and_chain, tmp_path):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     await _seed(engagement_store, chain_store)
     output = tmp_path / "roundtrip.json"
     await export_chain(store=chain_store, output_path=output)

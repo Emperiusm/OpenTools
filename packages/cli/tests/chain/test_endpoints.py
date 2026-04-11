@@ -77,15 +77,15 @@ def test_resolve_predicate_tool_nmap():
 
 
 @pytest.mark.asyncio
-async def test_resolve_entity_endpoint(async_chain_stores):
+async def test_resolve_entity_endpoint(engagement_store_and_chain):
     """resolve an entity endpoint against a real store with a populated chain."""
     from datetime import datetime, timezone
     from opentools.chain.config import ChainConfig
-    from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
+    from opentools.chain.extractors.pipeline import ExtractionPipeline
     from opentools.chain.query.graph_cache import GraphCache
     from opentools.models import Finding, FindingStatus, Severity
 
-    engagement_store, chain_store, _ = async_chain_stores
+    engagement_store, chain_store, _ = engagement_store_and_chain
     now = datetime.now(timezone.utc)
     f = Finding(
         id="f_ep", engagement_id="eng_test", tool="nmap",
@@ -94,7 +94,7 @@ async def test_resolve_entity_endpoint(async_chain_stores):
     )
     engagement_store.add_finding(f)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(f)
 
     cache = GraphCache(store=chain_store, maxsize=4)

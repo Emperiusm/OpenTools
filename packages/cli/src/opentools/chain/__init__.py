@@ -11,9 +11,8 @@ from opentools.chain.config import (
 )
 
 from opentools.chain.subscriptions import (
-    set_batch_context,
-    subscribe_chain_handlers,
     reset_subscriptions,
+    set_batch_context,
 )
 
 __all__ = [
@@ -21,7 +20,6 @@ __all__ = [
     "get_chain_config",
     "reset_chain_config",
     "set_chain_config",
-    "subscribe_chain_handlers",
     "set_batch_context",
     "reset_subscriptions",
 ]

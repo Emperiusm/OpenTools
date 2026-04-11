@@ -44,8 +44,8 @@ def _make_path() -> PathResult:
     )
 
 
-async def test_narrate_path_returns_text(async_chain_stores):
-    _engagement_store, chain_store, _ = async_chain_stores
+async def test_narrate_path_returns_text(engagement_store_and_chain):
+    _engagement_store, chain_store, _ = engagement_store_and_chain
     provider = _MockProvider(text="attack narrative")
     path = _make_path()
     result = await narrate_path(path=path, provider=provider, store=chain_store)
@@ -53,8 +53,8 @@ async def test_narrate_path_returns_text(async_chain_stores):
     assert provider.call_count == 1
 
 
-async def test_narrate_path_cache_hit_skips_provider(async_chain_stores):
-    _engagement_store, chain_store, _ = async_chain_stores
+async def test_narrate_path_cache_hit_skips_provider(engagement_store_and_chain):
+    _engagement_store, chain_store, _ = engagement_store_and_chain
     provider = _MockProvider(text="first call")
     path = _make_path()
     # First call populates cache
@@ -67,8 +67,8 @@ async def test_narrate_path_cache_hit_skips_provider(async_chain_stores):
     assert result == "first call"
 
 
-async def test_narrate_path_empty_path_returns_none(async_chain_stores):
-    _engagement_store, chain_store, _ = async_chain_stores
+async def test_narrate_path_empty_path_returns_none(engagement_store_and_chain):
+    _engagement_store, chain_store, _ = engagement_store_and_chain
     provider = _MockProvider()
     empty_path = PathResult(
         nodes=[], edges=[], total_cost=0.0, length=0,
@@ -79,8 +79,8 @@ async def test_narrate_path_empty_path_returns_none(async_chain_stores):
     assert provider.call_count == 0
 
 
-async def test_narrate_path_provider_failure_returns_none(async_chain_stores):
-    _engagement_store, chain_store, _ = async_chain_stores
+async def test_narrate_path_provider_failure_returns_none(engagement_store_and_chain):
+    _engagement_store, chain_store, _ = engagement_store_and_chain
 
     class _BrokenProvider:
         name = "broken"

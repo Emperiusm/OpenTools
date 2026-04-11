@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 import pytest
 
 from opentools.chain.config import ChainConfig
-from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
-from opentools.chain.linker.engine import AsyncLinkerEngine, get_default_rules
+from opentools.chain.extractors.pipeline import ExtractionPipeline
+from opentools.chain.linker.engine import LinkerEngine, get_default_rules
 from opentools.chain.query.graph_cache import GraphCache
 from opentools.chain.query.presets import (
     MitreCoverageResult,
@@ -24,10 +24,10 @@ async def _seed(engagement_store, chain_store, findings_data):
     for f in findings_data:
         engagement_store.add_finding(f)
     cfg = ChainConfig()
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=cfg)
+    pipeline = ExtractionPipeline(store=chain_store, config=cfg)
     for f in findings_data:
         await pipeline.extract_for_finding(f)
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store, config=cfg, rules=get_default_rules(cfg),
     )
     ctx = await engine.make_context(user_id=None)
@@ -63,8 +63,8 @@ def test_register_query_preset_adds_to_list():
 
 
 @pytest.mark.asyncio
-async def test_lateral_movement_runs_without_error(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_lateral_movement_runs_without_error(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = [
         _finding("lm_a", description="SSH on 10.0.0.5"),
         _finding("lm_b", description="HTTP on 10.0.0.5"),
@@ -79,8 +79,8 @@ async def test_lateral_movement_runs_without_error(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_priv_esc_chains_runs(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_priv_esc_chains_runs(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = [
         _finding("pe_a", severity=Severity.LOW, description="SSH on 10.0.0.5"),
         _finding("pe_b", severity=Severity.HIGH, description="HTTP on 10.0.0.5"),
@@ -95,8 +95,8 @@ async def test_priv_esc_chains_runs(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_external_to_internal_runs(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_external_to_internal_runs(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = [
         _finding("ei_a", description="public 8.8.8.8 via HTTPS"),
         _finding("ei_b", description="internal 10.0.0.5 via SSH"),
@@ -111,8 +111,8 @@ async def test_external_to_internal_runs(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_crown_jewel_runs(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_crown_jewel_runs(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = [_finding("cj_a", description="on 10.0.0.5")]
     await _seed(engagement_store, chain_store, findings)
 
@@ -125,8 +125,8 @@ async def test_crown_jewel_runs(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_mitre_coverage_basic(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_mitre_coverage_basic(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     f = _finding("mc_a", description="uses T1566 for initial access and T1059 for execution")
     await _seed(engagement_store, chain_store, [f])
 
@@ -138,8 +138,8 @@ async def test_mitre_coverage_basic(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_mitre_coverage_empty_engagement(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_mitre_coverage_empty_engagement(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     f = _finding("mc_e", description="no techniques here")
     await _seed(engagement_store, chain_store, [f])
 

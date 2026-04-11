@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 import pytest
 
 from opentools.chain.config import ChainConfig
-from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
-from opentools.chain.linker.engine import AsyncLinkerEngine, get_default_rules
+from opentools.chain.extractors.pipeline import ExtractionPipeline
+from opentools.chain.linker.engine import LinkerEngine, get_default_rules
 from opentools.chain.query.cost import edge_cost
 from opentools.chain.query.graph_cache import (
     GraphCache,
@@ -101,11 +101,11 @@ async def _build_linked_engagement(engagement_store, chain_store, n_findings: in
         findings.append(f)
 
     cfg = ChainConfig()
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=cfg)
+    pipeline = ExtractionPipeline(store=chain_store, config=cfg)
     for f in findings:
         await pipeline.extract_for_finding(f)
 
-    engine = AsyncLinkerEngine(
+    engine = LinkerEngine(
         store=chain_store, config=cfg, rules=get_default_rules(cfg),
     )
     ctx = await engine.make_context(user_id=None)
@@ -115,8 +115,8 @@ async def _build_linked_engagement(engagement_store, chain_store, n_findings: in
 
 
 @pytest.mark.asyncio
-async def test_graph_cache_build_master_graph(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_graph_cache_build_master_graph(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = await _build_linked_engagement(
         engagement_store, chain_store, n_findings=3,
     )
@@ -132,8 +132,8 @@ async def test_graph_cache_build_master_graph(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_graph_cache_hit_returns_same_instance(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_graph_cache_hit_returns_same_instance(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     await _build_linked_engagement(engagement_store, chain_store)
 
     cache = GraphCache(store=chain_store, maxsize=4)
@@ -147,8 +147,8 @@ async def test_graph_cache_hit_returns_same_instance(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_graph_cache_invalidation(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_graph_cache_invalidation(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     await _build_linked_engagement(engagement_store, chain_store)
 
     cache = GraphCache(store=chain_store, maxsize=4)
@@ -163,8 +163,8 @@ async def test_graph_cache_invalidation(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_graph_cache_subgraph_method(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_graph_cache_subgraph_method(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     findings = await _build_linked_engagement(
         engagement_store, chain_store, n_findings=3,
     )
@@ -182,12 +182,12 @@ async def test_graph_cache_subgraph_method(async_chain_stores):
 
 
 @pytest.mark.asyncio
-async def test_graph_cache_concurrent_build_collapses_to_one(async_chain_stores):
+async def test_graph_cache_concurrent_build_collapses_to_one(engagement_store_and_chain):
     """Spec G4: concurrent callers for the same cache key must collapse to
     a single ``_build_master_graph`` invocation via the per-key
     ``asyncio.Lock``.
     """
-    engagement_store, chain_store, _ = async_chain_stores
+    engagement_store, chain_store, _ = engagement_store_and_chain
     await _build_linked_engagement(
         engagement_store, chain_store, n_findings=2,
     )

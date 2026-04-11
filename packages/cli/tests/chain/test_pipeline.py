@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from opentools.chain.extractors.pipeline import (
-    AsyncExtractionPipeline,
+    ExtractionPipeline,
     ExtractionResult,
 )
 from opentools.chain.config import ChainConfig
@@ -29,12 +29,12 @@ def _insert_finding(engagement_store, finding: Finding):
     engagement_store.add_finding(finding)
 
 
-async def test_pipeline_extracts_ip_and_cve(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_pipeline_extracts_ip_and_cve(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     result = await pipeline.extract_for_finding(finding)
 
     assert isinstance(result, ExtractionResult)
@@ -47,12 +47,12 @@ async def test_pipeline_extracts_ip_and_cve(async_chain_stores):
     assert any("CVE-2024-1234" in v or "cve-2024-1234" in v for v in mention_values)
 
 
-async def test_pipeline_cache_hit_on_second_run(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_pipeline_cache_hit_on_second_run(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     first = await pipeline.extract_for_finding(finding)
     second = await pipeline.extract_for_finding(finding)
 
@@ -63,23 +63,23 @@ async def test_pipeline_cache_hit_on_second_run(async_chain_stores):
     assert len(mentions_after) == first.mentions_created
 
 
-async def test_pipeline_force_bypasses_cache(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_pipeline_force_bypasses_cache(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(finding)
     result = await pipeline.extract_for_finding(finding, force=True)
     assert result.cache_hit is False
 
 
-async def test_pipeline_update_replaces_mentions(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_pipeline_update_replaces_mentions(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(finding)
     first_mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     assert any("10.0.0.5" in m.raw_value for m in first_mentions)
@@ -98,19 +98,19 @@ async def test_pipeline_update_replaces_mentions(async_chain_stores):
     assert "192.168.1.10" in second_values
 
 
-async def test_pipeline_llm_stage_not_run_without_provider(async_chain_stores):
+async def test_pipeline_llm_stage_not_run_without_provider(engagement_store_and_chain):
     """llm_provider=None must never invoke an LLM stage."""
-    engagement_store, chain_store, now = async_chain_stores
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     result = await pipeline.extract_for_finding(finding, llm_provider=None)
     assert result.stage3_count == 0
 
 
-async def test_pipeline_llm_stage_runs_when_provided(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_pipeline_llm_stage_runs_when_provided(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
@@ -121,19 +121,19 @@ async def test_pipeline_llm_stage_runs_when_provided(async_chain_stores):
 
     provider = OllamaProvider(call_fn=mock_call)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     result = await pipeline.extract_for_finding(finding, llm_provider=provider)
     assert result.stage3_count >= 1
     mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     assert any("ctf_admin" in m.raw_value for m in mentions)
 
 
-async def test_pipeline_normalizes_entity_values(async_chain_stores):
-    engagement_store, chain_store, now = async_chain_stores
+async def test_pipeline_normalizes_entity_values(engagement_store_and_chain):
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding(description="connect via SSH to 10.0.0.5 and cve-2024-1234")
     _insert_finding(engagement_store, finding)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(finding)
 
     # CVE should be normalized to uppercase in the Entity table
@@ -146,18 +146,18 @@ async def test_pipeline_normalizes_entity_values(async_chain_stores):
     assert entity.canonical_value == "CVE-2024-1234"  # normalized
 
 
-async def test_mention_count_matches_ground_truth_after_force_rerun(async_chain_stores):
+async def test_mention_count_matches_ground_truth_after_force_rerun(engagement_store_and_chain):
     """Regression: force re-extraction must not double-count mentions.
 
     Before the fix, mention_count would drift upward on every re-extraction
     because it was incremented from the already-incremented stored value
     rather than recomputed from ground truth.
     """
-    engagement_store, chain_store, now = async_chain_stores
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding(description="10.0.0.5 appears here")
     _insert_finding(engagement_store, finding)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(finding)
     await pipeline.extract_for_finding(finding, force=True)
     await pipeline.extract_for_finding(finding, force=True)
@@ -178,18 +178,18 @@ async def test_mention_count_matches_ground_truth_after_force_rerun(async_chain_
         )
 
 
-async def test_mention_count_accurate_across_findings(async_chain_stores):
+async def test_mention_count_accurate_across_findings(engagement_store_and_chain):
     """Entity shared between two findings has mention_count = 2.
 
     After re-extracting one of the findings, mention_count must still be 2.
     """
-    engagement_store, chain_store, now = async_chain_stores
+    engagement_store, chain_store, now = engagement_store_and_chain
     finding_a = _finding().model_copy(update={"id": "fnd_a", "description": "see 10.0.0.5 now"})
     finding_b = _finding().model_copy(update={"id": "fnd_b", "description": "also 10.0.0.5 here"})
     _insert_finding(engagement_store, finding_a)
     _insert_finding(engagement_store, finding_b)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(finding_a)
     await pipeline.extract_for_finding(finding_b)
 
@@ -213,9 +213,9 @@ async def test_mention_count_accurate_across_findings(async_chain_stores):
     )
 
 
-async def test_async_pipeline_awaits_llm_provider(async_chain_stores):
+async def test_async_pipeline_awaits_llm_provider(engagement_store_and_chain):
     """LLM stage 3 is awaited natively rather than running asyncio.run in sync code."""
-    engagement_store, chain_store, _ = async_chain_stores
+    engagement_store, chain_store, _ = engagement_store_and_chain
     finding = _finding(description="SSH on 10.0.0.5")
     _insert_finding(engagement_store, finding)
 
@@ -228,7 +228,7 @@ async def test_async_pipeline_awaits_llm_provider(async_chain_stores):
         return '{"entities": [{"type": "user", "value": "ctf_admin", "confidence": 0.85}]}'
 
     provider = OllamaProvider(call_fn=mock_call)
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     result = await pipeline.extract_for_finding(finding, llm_provider=provider)
 
     assert isinstance(result, ExtractionResult)

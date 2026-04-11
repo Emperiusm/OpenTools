@@ -8,7 +8,7 @@ from opentools.chain.entity_ops import (
     merge_entities,
     split_entity,
 )
-from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
+from opentools.chain.extractors.pipeline import ExtractionPipeline
 from opentools.chain.models import entity_id_for
 from opentools.models import (
     Engagement,
@@ -31,11 +31,11 @@ def _finding(id_: str, engagement_id: str = "eng_test", description: str = "") -
     )
 
 
-async def test_merge_two_host_entities(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_merge_two_host_entities(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     f = _finding("m_a", description="SSH on 10.0.0.5 and 10.0.0.6")
     engagement_store.add_finding(f)
-    await AsyncExtractionPipeline(
+    await ExtractionPipeline(
         store=chain_store, config=ChainConfig()
     ).extract_for_finding(f)
 
@@ -53,11 +53,11 @@ async def test_merge_two_host_entities(async_chain_stores):
     assert await chain_store.get_entity(id_6, user_id=None) is not None
 
 
-async def test_merge_into_a_reverses_direction(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_merge_into_a_reverses_direction(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     f = _finding("m_b", description="SSH on 10.0.0.5 and 10.0.0.6")
     engagement_store.add_finding(f)
-    await AsyncExtractionPipeline(
+    await ExtractionPipeline(
         store=chain_store, config=ChainConfig()
     ).extract_for_finding(f)
 
@@ -72,11 +72,11 @@ async def test_merge_into_a_reverses_direction(async_chain_stores):
     assert await chain_store.get_entity(id_5, user_id=None) is not None
 
 
-async def test_merge_different_types_raises(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_merge_different_types_raises(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     f = _finding("m_t", description="10.0.0.5 and example.com")
     engagement_store.add_finding(f)
-    await AsyncExtractionPipeline(
+    await ExtractionPipeline(
         store=chain_store, config=ChainConfig()
     ).extract_for_finding(f)
 
@@ -86,16 +86,16 @@ async def test_merge_different_types_raises(async_chain_stores):
         await merge_entities(store=chain_store, a_id=id_ip, b_id=id_dom)
 
 
-async def test_merge_missing_entity_raises(async_chain_stores):
-    _engagement_store, chain_store, _ = async_chain_stores
+async def test_merge_missing_entity_raises(engagement_store_and_chain):
+    _engagement_store, chain_store, _ = engagement_store_and_chain
     with pytest.raises(IncompatibleMerge):
         await merge_entities(
             store=chain_store, a_id="missing_a", b_id="missing_b"
         )
 
 
-async def test_split_entity_by_engagement(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_split_entity_by_engagement(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
 
     # Create a SECOND engagement so the shared entity spans both
     eng2 = Engagement(
@@ -111,7 +111,7 @@ async def test_split_entity_by_engagement(async_chain_stores):
     engagement_store.add_finding(f1)
     engagement_store.add_finding(f2)
 
-    pipeline = AsyncExtractionPipeline(store=chain_store, config=ChainConfig())
+    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
     await pipeline.extract_for_finding(f1)
     await pipeline.extract_for_finding(f2)
 
@@ -128,11 +128,11 @@ async def test_split_entity_by_engagement(async_chain_stores):
         assert await chain_store.get_entity(new_id, user_id=None) is not None
 
 
-async def test_split_single_engagement_no_op(async_chain_stores):
-    engagement_store, chain_store, _ = async_chain_stores
+async def test_split_single_engagement_no_op(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
     f = _finding("s_c", description="only 10.0.0.5")
     engagement_store.add_finding(f)
-    await AsyncExtractionPipeline(
+    await ExtractionPipeline(
         store=chain_store, config=ChainConfig()
     ).extract_for_finding(f)
 

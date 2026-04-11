@@ -1,7 +1,7 @@
 """Pydantic models for chain data layer.
 
 The web backend mirrors these as SQLModel tables in packages/web/backend/app/models.py.
-The CLI SQLite backend creates corresponding tables via SQLAlchemy Core in store_extensions.py.
+The CLI SQLite backend creates corresponding tables via the migration in engagement.schema.
 """
 from __future__ import annotations
 
