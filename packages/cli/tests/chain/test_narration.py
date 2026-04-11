@@ -1,8 +1,9 @@
-import asyncio
-from datetime import datetime, timezone
+import pytest
 
 from opentools.chain.query.graph_cache import PathEdgeRef, PathNode, PathResult
 from opentools.chain.query.narration import narrate_path
+
+pytestmark = pytest.mark.asyncio
 
 
 class _MockProvider:
@@ -43,39 +44,44 @@ def _make_path() -> PathResult:
     )
 
 
-def test_narrate_path_returns_text(chain_store):
+async def test_narrate_path_returns_text(async_chain_stores):
+    _engagement_store, chain_store, _ = async_chain_stores
     provider = _MockProvider(text="attack narrative")
     path = _make_path()
-    result = asyncio.run(narrate_path(path=path, provider=provider, store=chain_store))
+    result = await narrate_path(path=path, provider=provider, store=chain_store)
     assert result == "attack narrative"
     assert provider.call_count == 1
 
 
-def test_narrate_path_cache_hit_skips_provider(chain_store):
+async def test_narrate_path_cache_hit_skips_provider(async_chain_stores):
+    _engagement_store, chain_store, _ = async_chain_stores
     provider = _MockProvider(text="first call")
     path = _make_path()
     # First call populates cache
-    asyncio.run(narrate_path(path=path, provider=provider, store=chain_store))
+    await narrate_path(path=path, provider=provider, store=chain_store)
     assert provider.call_count == 1
 
     # Second call should hit cache (provider not invoked again)
-    result = asyncio.run(narrate_path(path=path, provider=provider, store=chain_store))
+    result = await narrate_path(path=path, provider=provider, store=chain_store)
     assert provider.call_count == 1
     assert result == "first call"
 
 
-def test_narrate_path_empty_path_returns_none(chain_store):
+async def test_narrate_path_empty_path_returns_none(async_chain_stores):
+    _engagement_store, chain_store, _ = async_chain_stores
     provider = _MockProvider()
     empty_path = PathResult(
         nodes=[], edges=[], total_cost=0.0, length=0,
         source_finding_id="", target_finding_id="",
     )
-    result = asyncio.run(narrate_path(path=empty_path, provider=provider, store=chain_store))
+    result = await narrate_path(path=empty_path, provider=provider, store=chain_store)
     assert result is None
     assert provider.call_count == 0
 
 
-def test_narrate_path_provider_failure_returns_none(chain_store):
+async def test_narrate_path_provider_failure_returns_none(async_chain_stores):
+    _engagement_store, chain_store, _ = async_chain_stores
+
     class _BrokenProvider:
         name = "broken"
         model = "broken-1"
@@ -91,5 +97,5 @@ def test_narrate_path_provider_failure_returns_none(chain_store):
 
     provider = _BrokenProvider()
     path = _make_path()
-    result = asyncio.run(narrate_path(path=path, provider=provider, store=chain_store))
+    result = await narrate_path(path=path, provider=provider, store=chain_store)
     assert result is None
