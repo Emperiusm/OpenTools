@@ -1,15 +1,19 @@
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
 
 from opentools.chain.config import ChainConfig
 from opentools.chain.events import get_event_bus, reset_event_bus
-from opentools.chain.extractors.pipeline import ExtractionPipeline
-from opentools.chain.linker.engine import LinkerEngine, get_default_rules
+from opentools.chain.extractors.pipeline import AsyncExtractionPipeline, ExtractionPipeline
+from opentools.chain.linker.engine import AsyncLinkerEngine, LinkerEngine, get_default_rules
 from opentools.chain.store_extensions import ChainStore
 from opentools.chain.subscriptions import (
+    DrainWorker,
+    _reset_drain_state,
     reset_subscriptions,
     set_batch_context,
+    start_drain_worker,
     subscribe_chain_handlers,
 )
 from opentools.models import Finding, FindingStatus, Severity
@@ -143,3 +147,67 @@ def test_disabled_config_skips_subscription():
         from opentools.chain.config import reset_chain_config
         reset_chain_config()
         reset_subscriptions()
+
+
+@pytest.mark.asyncio
+async def test_drain_worker_processes_finding_created(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    reset_subscriptions()
+    reset_event_bus()
+    _reset_drain_state()
+
+    cfg = ChainConfig()
+    pipeline = AsyncExtractionPipeline(store=chain_store, config=cfg)
+    engine = AsyncLinkerEngine(store=chain_store, config=cfg, rules=get_default_rules(cfg))
+
+    worker = await start_drain_worker(chain_store, pipeline, engine)
+
+    engagement_store.add_finding(_finding("drain_a", description="SSH on 10.0.0.5"))
+
+    # Let the event loop pump so call_soon_threadsafe dispatch lands
+    await asyncio.sleep(0.01)
+    # Wait for drain worker to process the queued finding
+    await worker.queue.join()
+
+    mentions = await chain_store.mentions_for_finding("drain_a", user_id=None)
+    assert len(mentions) >= 1
+
+    await worker.stop()
+    reset_subscriptions()
+    reset_event_bus()
+    _reset_drain_state()
+
+
+@pytest.mark.asyncio
+async def test_drain_worker_respects_batch_context(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    reset_subscriptions()
+    reset_event_bus()
+    _reset_drain_state()
+
+    cfg = ChainConfig()
+    pipeline = AsyncExtractionPipeline(store=chain_store, config=cfg)
+    engine = AsyncLinkerEngine(store=chain_store, config=cfg, rules=get_default_rules(cfg))
+
+    worker = await start_drain_worker(chain_store, pipeline, engine)
+
+    set_batch_context(True)
+    try:
+        engagement_store.add_finding(_finding("drain_b", description="HTTP on 10.0.0.5"))
+        # Let the event loop pump so call_soon_threadsafe dispatch lands
+        await asyncio.sleep(0.01)
+        # Wait for any queued items to be pulled off (but short-circuited
+        # inside the drain worker because batch context is active)
+        await worker.queue.join()
+
+        mentions = await chain_store.mentions_for_finding("drain_b", user_id=None)
+        # Inside batch context the drain worker consumed the finding id
+        # but did NOT extract — mentions list is empty
+        assert mentions == []
+    finally:
+        set_batch_context(False)
+
+    await worker.stop()
+    reset_subscriptions()
+    reset_event_bus()
+    _reset_drain_state()
