@@ -5,6 +5,7 @@ linking pipeline, and asserts known entity/relation outcomes within tolerance.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from opentools.chain.query.engine import ChainQueryEngine
 from opentools.chain.query.graph_cache import GraphCache
 from opentools.chain.query.presets import mitre_coverage
 from opentools.chain.store_extensions import ChainStore
+from opentools.chain.stores.sqlite_async import AsyncChainStore
 from opentools.engagement.store import EngagementStore
 from opentools.models import (
     Engagement,
@@ -53,6 +55,9 @@ def _seed_canonical(tmp_path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     db_path = tmp_path / "canonical.db"
     es = EngagementStore(db_path=db_path)
+    # Expose the db_path via an attribute so the caller can open a
+    # separate AsyncChainStore against the same file for query checks.
+    es._db_path = db_path  # type: ignore[attr-defined]
     # Create both engagements used by the fixture set
     now = datetime.now()
     for eng_id in ["eng_canonical", "eng_canonical_2"]:
@@ -146,26 +151,40 @@ def test_pipeline_full_integration(tmp_path):
         )
 
     # ── Query sanity: k-shortest path between known-connected findings ───
-    cache = GraphCache(store=cs, maxsize=4)
-    qe = ChainQueryEngine(store=cs, graph_cache=cache, config=cfg)
-    first_pair = expected_edges["expected_pairs"][0]
-    src_spec = parse_endpoint_spec(first_pair["source"])
-    tgt_spec = parse_endpoint_spec(first_pair["target"])
-    paths = qe.k_shortest_paths(
-        from_spec=src_spec, to_spec=tgt_spec, user_id=None, k=3,
-        include_candidates=True,
-    )
-    assert len(paths) >= 1, (
-        f"k_shortest_paths returned no results between "
-        f"{first_pair['source']} and {first_pair['target']}"
-    )
+    # GraphCache / ChainQueryEngine / presets are async and run against
+    # the async store protocol. Open a fresh AsyncChainStore against the
+    # same DB file for the query portion (sync seeding above is fine;
+    # both backends read the same SQLite file).
+    async def _run_query_checks():
+        async_store = AsyncChainStore(db_path=es._db_path)
+        await async_store.initialize()
+        try:
+            cache = GraphCache(store=async_store, maxsize=4)
+            qe = ChainQueryEngine(
+                store=async_store, graph_cache=cache, config=cfg,
+            )
+            first_pair = expected_edges["expected_pairs"][0]
+            src_spec = parse_endpoint_spec(first_pair["source"])
+            tgt_spec = parse_endpoint_spec(first_pair["target"])
+            paths = await qe.k_shortest_paths(
+                from_spec=src_spec, to_spec=tgt_spec,
+                user_id=None, k=3, include_candidates=True,
+            )
+            assert len(paths) >= 1, (
+                f"k_shortest_paths returned no results between "
+                f"{first_pair['source']} and {first_pair['target']}"
+            )
 
-    # ── MITRE coverage preset sanity ────────────────────────────────────
-    result = mitre_coverage("eng_canonical", store=cs)
-    assert len(result.tactics_present) >= 1, (
-        f"mitre_coverage returned no tactics for eng_canonical. "
-        f"tactic_counts={result.tactic_counts}"
-    )
+            # ── MITRE coverage preset sanity ────────────────────────────
+            mc = await mitre_coverage("eng_canonical", store=async_store)
+            assert len(mc.tactics_present) >= 1, (
+                f"mitre_coverage returned no tactics for eng_canonical. "
+                f"tactic_counts={mc.tactic_counts}"
+            )
+        finally:
+            await async_store.close()
+
+    asyncio.run(_run_query_checks())
 
 
 def test_pipeline_resume_matches_single_run(tmp_path):

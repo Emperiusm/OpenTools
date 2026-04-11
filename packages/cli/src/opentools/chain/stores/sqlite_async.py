@@ -534,6 +534,45 @@ class AsyncChainStore:
             rows = await cur.fetchall()
         return [(row["id"], row["engagement_id"]) for row in rows]
 
+    @require_initialized
+    async def fetch_finding_ids_for_entity(
+        self, entity_id: str, *, user_id
+    ) -> list[str]:
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT m.finding_id
+            FROM entity_mention m
+            JOIN findings f ON f.id = m.finding_id
+            WHERE m.entity_id = ? AND f.deleted_at IS NULL
+            """,
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [row["finding_id"] for row in rows]
+
+    @require_initialized
+    async def fetch_entity_mentions_for_engagement(
+        self,
+        engagement_id: str,
+        *,
+        entity_type: str,
+        user_id,
+    ) -> list[tuple[str, str]]:
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT m.finding_id, e.canonical_value
+            FROM entity_mention m
+            JOIN entity e ON e.id = m.entity_id
+            JOIN findings f ON f.id = m.finding_id
+            WHERE e.type = ?
+              AND f.engagement_id = ?
+              AND f.deleted_at IS NULL
+            """,
+            (entity_type, engagement_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(row["finding_id"], row["canonical_value"]) for row in rows]
+
     # ─── Relation CRUD ───────────────────────────────────────────────────
 
     @require_initialized

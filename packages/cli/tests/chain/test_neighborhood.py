@@ -4,8 +4,8 @@ import pytest
 import rustworkx as rx
 
 from opentools.chain.config import ChainConfig
-from opentools.chain.extractors.pipeline import ExtractionPipeline
-from opentools.chain.linker.engine import LinkerEngine, get_default_rules
+from opentools.chain.extractors.pipeline import AsyncExtractionPipeline
+from opentools.chain.linker.engine import AsyncLinkerEngine, get_default_rules
 from opentools.chain.query.bounded import simple_paths_bounded
 from opentools.chain.query.graph_cache import (
     EdgeData,
@@ -19,8 +19,10 @@ from opentools.chain.query.neighborhood import NeighborhoodResult, neighborhood
 from opentools.chain.query.subgraph import filter_subgraph
 from opentools.models import Finding, FindingStatus, Severity
 
+pytestmark = pytest.mark.asyncio
 
-def _seed_three_linked(engagement_store, chain_store):
+
+async def _seed_three_linked(engagement_store, chain_store):
     now = datetime.now(timezone.utc)
     findings = []
     for i in range(3):
@@ -34,24 +36,26 @@ def _seed_three_linked(engagement_store, chain_store):
         engagement_store.add_finding(f)
         findings.append(f)
     cfg = ChainConfig()
-    pipeline = ExtractionPipeline(store=chain_store, config=cfg)
+    pipeline = AsyncExtractionPipeline(store=chain_store, config=cfg)
     for f in findings:
-        pipeline.extract_for_finding(f)
-    engine = LinkerEngine(store=chain_store, config=cfg, rules=get_default_rules(cfg))
-    ctx = engine.make_context(user_id=None)
+        await pipeline.extract_for_finding(f)
+    engine = AsyncLinkerEngine(
+        store=chain_store, config=cfg, rules=get_default_rules(cfg),
+    )
+    ctx = await engine.make_context(user_id=None)
     for f in findings:
-        engine.link_finding(f.id, user_id=None, context=ctx)
+        await engine.link_finding(f.id, user_id=None, context=ctx)
     return findings
 
 
 # ─── bounded ──────────────────────────────────────────────────────────
 
 
-def test_simple_paths_bounded_finds_paths(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    findings = _seed_three_linked(engagement_store, chain_store)
+async def test_simple_paths_bounded_finds_paths(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    findings = await _seed_three_linked(engagement_store, chain_store)
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None)
+    master = await cache.get_master_graph(user_id=None)
 
     sources = {master.node_map[findings[0].id]}
     targets = {master.node_map[findings[2].id]}
@@ -63,11 +67,11 @@ def test_simple_paths_bounded_finds_paths(engagement_store_and_chain):
     assert reason is None
 
 
-def test_simple_paths_bounded_max_results_truncation(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    findings = _seed_three_linked(engagement_store, chain_store)
+async def test_simple_paths_bounded_max_results_truncation(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    findings = await _seed_three_linked(engagement_store, chain_store)
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None)
+    master = await cache.get_master_graph(user_id=None)
 
     sources = {master.node_map[findings[0].id]}
     targets = {master.node_map[findings[2].id]}
@@ -81,11 +85,11 @@ def test_simple_paths_bounded_max_results_truncation(engagement_store_and_chain)
 # ─── neighborhood ─────────────────────────────────────────────────────
 
 
-def test_neighborhood_radius_one(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    findings = _seed_three_linked(engagement_store, chain_store)
+async def test_neighborhood_radius_one(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    findings = await _seed_three_linked(engagement_store, chain_store)
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None)
+    master = await cache.get_master_graph(user_id=None)
 
     seed_idx = master.node_map[findings[0].id]
     result = neighborhood(master, seed_idx, hops=1, direction="both")
@@ -95,11 +99,11 @@ def test_neighborhood_radius_one(engagement_store_and_chain):
     assert len(result.nodes) >= 1
 
 
-def test_neighborhood_radius_zero_only_seed(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    findings = _seed_three_linked(engagement_store, chain_store)
+async def test_neighborhood_radius_zero_only_seed(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    findings = await _seed_three_linked(engagement_store, chain_store)
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None)
+    master = await cache.get_master_graph(user_id=None)
 
     seed_idx = master.node_map[findings[0].id]
     result = neighborhood(master, seed_idx, hops=0, direction="both")
@@ -110,11 +114,11 @@ def test_neighborhood_radius_zero_only_seed(engagement_store_and_chain):
 # ─── subgraph ─────────────────────────────────────────────────────────
 
 
-def test_filter_subgraph_by_severity(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    findings = _seed_three_linked(engagement_store, chain_store)
+async def test_filter_subgraph_by_severity(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    findings = await _seed_three_linked(engagement_store, chain_store)
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None)
+    master = await cache.get_master_graph(user_id=None)
 
     # Keep only HIGH severity findings (nb_f0, nb_f2)
     def predicate(node: FindingNode) -> bool:
@@ -124,11 +128,11 @@ def test_filter_subgraph_by_severity(engagement_store_and_chain):
     assert sub.num_nodes() == 2
 
 
-def test_filter_subgraph_empty_predicate(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    _seed_three_linked(engagement_store, chain_store)
+async def test_filter_subgraph_empty_predicate(async_chain_stores):
+    engagement_store, chain_store, _ = async_chain_stores
+    await _seed_three_linked(engagement_store, chain_store)
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None)
+    master = await cache.get_master_graph(user_id=None)
 
     def predicate(node: FindingNode) -> bool:
         return False

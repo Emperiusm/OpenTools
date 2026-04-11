@@ -216,7 +216,8 @@ async def entities(
 
 
 @app.command()
-def path(
+@_async_command
+async def path(
     from_: str = typer.Argument(..., metavar="FROM", help="Source endpoint (finding id, type:value, or key=value)"),
     to: str = typer.Argument(..., help="Target endpoint"),
     k: int = typer.Option(5, "-k", help="Number of paths"),
@@ -224,33 +225,36 @@ def path(
     include_candidates: bool = typer.Option(False, "--include-candidates", help="Include candidate-status edges"),
 ) -> None:
     """Run a k-shortest paths query between two endpoints."""
-    _engagement_store, chain_store = _get_stores()
-    cfg = get_chain_config()
-    cache = GraphCache(store=chain_store, maxsize=4)
-    qe = ChainQueryEngine(store=chain_store, graph_cache=cache, config=cfg)
-
+    _engagement_store, chain_store = await _get_stores_async()
     try:
-        from_spec = parse_endpoint_spec(from_)
-        to_spec = parse_endpoint_spec(to)
-    except ValueError as exc:
-        rprint(f"[red]invalid endpoint: {exc}[/red]")
-        raise typer.Exit(code=1)
+        cfg = get_chain_config()
+        cache = GraphCache(store=chain_store, maxsize=4)
+        qe = ChainQueryEngine(store=chain_store, graph_cache=cache, config=cfg)
 
-    results = qe.k_shortest_paths(
-        from_spec=from_spec, to_spec=to_spec,
-        user_id=None, k=k, max_hops=max_hops,
-        include_candidates=include_candidates,
-    )
+        try:
+            from_spec = parse_endpoint_spec(from_)
+            to_spec = parse_endpoint_spec(to)
+        except ValueError as exc:
+            rprint(f"[red]invalid endpoint: {exc}[/red]")
+            raise typer.Exit(code=1)
 
-    if not results:
-        rprint("[yellow]no paths found[/yellow]")
-        return
+        results = await qe.k_shortest_paths(
+            from_spec=from_spec, to_spec=to_spec,
+            user_id=None, k=k, max_hops=max_hops,
+            include_candidates=include_candidates,
+        )
 
-    for i, p in enumerate(results, 1):
-        rprint(f"[bold]Path {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
-        for j, n in enumerate(p.nodes):
-            arrow = " -> " if j < len(p.nodes) - 1 else ""
-            rprint(f"  {n.finding_id} ({n.severity}, {n.tool}): {n.title}{arrow}")
+        if not results:
+            rprint("[yellow]no paths found[/yellow]")
+            return
+
+        for i, p in enumerate(results, 1):
+            rprint(f"[bold]Path {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
+            for j, n in enumerate(p.nodes):
+                arrow = " -> " if j < len(p.nodes) - 1 else ""
+                rprint(f"  {n.finding_id} ({n.severity}, {n.tool}): {n.title}{arrow}")
+    finally:
+        await chain_store.close()
 
 
 @app.command()
@@ -277,44 +281,57 @@ async def export(
 
 
 @app.command()
-def query(
+@_async_command
+async def query(
     preset: str = typer.Argument(..., help="Preset name (lateral-movement, priv-esc-chains, external-to-internal, crown-jewel, mitre-coverage)"),
     engagement: str = typer.Option(..., "--engagement", help="Engagement id"),
     entity_ref: str | None = typer.Option(None, "--entity", help="Required for crown-jewel preset"),
 ) -> None:
     """Run a named query preset."""
-    _engagement_store, chain_store = _get_stores()
-    cfg = get_chain_config()
-    cache = GraphCache(store=chain_store, maxsize=4)
+    _engagement_store, chain_store = await _get_stores_async()
+    try:
+        cfg = get_chain_config()
+        cache = GraphCache(store=chain_store, maxsize=4)
 
-    if preset == "lateral-movement":
-        results = lateral_movement(engagement, cache=cache, store=chain_store, config=cfg)
-    elif preset == "priv-esc-chains":
-        results = priv_esc_chains(engagement, cache=cache, store=chain_store, config=cfg)
-    elif preset == "external-to-internal":
-        results = external_to_internal(engagement, cache=cache, store=chain_store, config=cfg)
-    elif preset == "crown-jewel":
-        if not entity_ref:
-            rprint("[red]crown-jewel preset requires --entity[/red]")
+        if preset == "lateral-movement":
+            results = await lateral_movement(
+                engagement, cache=cache, store=chain_store, config=cfg,
+            )
+        elif preset == "priv-esc-chains":
+            results = await priv_esc_chains(
+                engagement, cache=cache, store=chain_store, config=cfg,
+            )
+        elif preset == "external-to-internal":
+            results = await external_to_internal(
+                engagement, cache=cache, store=chain_store, config=cfg,
+            )
+        elif preset == "crown-jewel":
+            if not entity_ref:
+                rprint("[red]crown-jewel preset requires --entity[/red]")
+                raise typer.Exit(code=1)
+            results = await crown_jewel(
+                engagement, entity_ref,
+                cache=cache, store=chain_store, config=cfg,
+            )
+        elif preset == "mitre-coverage":
+            result = await mitre_coverage(engagement, store=chain_store)
+            rprint(f"[bold]MITRE Coverage for {engagement}[/bold]")
+            rprint(f"Tactics present: {', '.join(result.tactics_present) or 'none'}")
+            rprint(f"Tactics missing: {', '.join(result.tactics_missing)}")
+            return
+        else:
+            presets = list_presets()
+            rprint(f"[red]unknown preset: {preset}[/red]")
+            rprint(f"Available: {', '.join(presets.keys())}")
             raise typer.Exit(code=1)
-        results = crown_jewel(engagement, entity_ref, cache=cache, store=chain_store, config=cfg)
-    elif preset == "mitre-coverage":
-        result = mitre_coverage(engagement, store=chain_store)
-        rprint(f"[bold]MITRE Coverage for {engagement}[/bold]")
-        rprint(f"Tactics present: {', '.join(result.tactics_present) or 'none'}")
-        rprint(f"Tactics missing: {', '.join(result.tactics_missing)}")
-        return
-    else:
-        presets = list_presets()
-        rprint(f"[red]unknown preset: {preset}[/red]")
-        rprint(f"Available: {', '.join(presets.keys())}")
-        raise typer.Exit(code=1)
 
-    if not results:
-        rprint("[yellow]no results[/yellow]")
-        return
+        if not results:
+            rprint("[yellow]no results[/yellow]")
+            return
 
-    for i, p in enumerate(results, 1):
-        rprint(f"[bold]Result {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
-        for n in p.nodes:
-            rprint(f"  {n.finding_id}: {n.title}")
+        for i, p in enumerate(results, 1):
+            rprint(f"[bold]Result {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
+            for n in p.nodes:
+                rprint(f"  {n.finding_id}: {n.title}")
+    finally:
+        await chain_store.close()

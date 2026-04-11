@@ -116,6 +116,34 @@ class ChainStoreProtocol(Protocol):
         user_id: UUID | None,
     ) -> list[tuple[str, str]]: ...
 
+    async def fetch_finding_ids_for_entity(
+        self,
+        entity_id: str,
+        *,
+        user_id: UUID | None,
+    ) -> list[str]:
+        """Return distinct finding ids that mention ``entity_id``.
+
+        Used by the query engine's endpoint resolver to map
+        ``type:value`` endpoints onto the master-graph node set.
+        """
+        ...
+
+    async def fetch_entity_mentions_for_engagement(
+        self,
+        engagement_id: str,
+        *,
+        entity_type: str,
+        user_id: UUID | None,
+    ) -> list[tuple[str, str]]:
+        """Return ``(finding_id, canonical_value)`` pairs for all
+        mentions of entities of ``entity_type`` that belong to
+        non-deleted findings in ``engagement_id``.
+
+        Drives the external-to-internal and mitre-coverage presets.
+        """
+        ...
+
     # --- Relation CRUD ---
 
     async def upsert_relations_bulk(

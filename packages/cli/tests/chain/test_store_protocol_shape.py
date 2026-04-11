@@ -20,11 +20,13 @@ EXPECTED_METHODS = {
     # Entity CRUD (6)
     "upsert_entity", "upsert_entities_bulk", "get_entity",
     "get_entities_by_ids", "list_entities", "delete_entity",
-    # Mention CRUD (7)
+    # Mention CRUD (9)
     "add_mentions_bulk", "mentions_for_finding",
     "delete_mentions_for_finding", "recompute_mention_counts",
     "rewrite_mentions_entity_id", "rewrite_mentions_by_ids",
     "fetch_mentions_with_engagement",
+    "fetch_finding_ids_for_entity",
+    "fetch_entity_mentions_for_engagement",
     # Relation CRUD (5)
     "upsert_relations_bulk", "relations_for_finding",
     "fetch_relations_in_scope", "stream_relations_in_scope",
@@ -49,8 +51,10 @@ EXPECTED_METHODS = {
 def test_protocol_has_all_expected_methods():
     # Spec §4.3 originally listed 41 methods; Task 24 added
     # fetch_all_finding_ids for the exporter's "all engagements" path,
-    # bringing the total to 42.
-    assert len(EXPECTED_METHODS) == 42
+    # bringing the total to 42. Task 26 added fetch_finding_ids_for_entity
+    # and fetch_entity_mentions_for_engagement for the async query stack,
+    # bringing the total to 44.
+    assert len(EXPECTED_METHODS) == 44
     methods = _protocol_methods()
     missing = EXPECTED_METHODS - methods
     extra = methods - EXPECTED_METHODS
