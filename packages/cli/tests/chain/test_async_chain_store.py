@@ -1360,3 +1360,175 @@ async def test_get_parser_output_returns_entries(extraction_store):
     assert by_name["parser_a"].data == {"key": "value"}
     assert by_name["parser_b"].data == {"other": 42}
     assert by_name["parser_a"].finding_id == "f1"
+
+
+# --- LLM caches ---
+
+
+@pytest_asyncio.fixture
+async def cache_store(tmp_path):
+    store = AsyncChainStore(db_path=tmp_path / "chain.db")
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_get_extraction_cache_missing_returns_none(cache_store):
+    got = await cache_store.get_extraction_cache("missing-key", user_id=None)
+    assert got is None
+
+
+@pytest.mark.asyncio
+async def test_put_then_get_extraction_cache_roundtrips_bytes(cache_store):
+    blob = b'{"entities": [{"type": "host", "value": "h1"}]}'
+    await cache_store.put_extraction_cache(
+        cache_key="ck1",
+        provider="openai",
+        model="gpt-4",
+        schema_version=1,
+        result_json=blob,
+        user_id=None,
+    )
+    got = await cache_store.get_extraction_cache("ck1", user_id=None)
+    assert got == blob
+
+
+@pytest.mark.asyncio
+async def test_put_extraction_cache_updates_on_conflict(cache_store):
+    await cache_store.put_extraction_cache(
+        cache_key="ck1",
+        provider="openai",
+        model="gpt-4",
+        schema_version=1,
+        result_json=b"first",
+        user_id=None,
+    )
+    await cache_store.put_extraction_cache(
+        cache_key="ck1",
+        provider="anthropic",
+        model="claude-4",
+        schema_version=2,
+        result_json=b"second",
+        user_id=None,
+    )
+    got = await cache_store.get_extraction_cache("ck1", user_id=None)
+    assert got == b"second"
+
+    async with cache_store._conn.execute(
+        "SELECT provider, model, schema_version FROM extraction_cache "
+        "WHERE cache_key = ?",
+        ("ck1",),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["provider"] == "anthropic"
+    assert row["model"] == "claude-4"
+    assert row["schema_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_llm_link_cache_missing_returns_none(cache_store):
+    got = await cache_store.get_llm_link_cache("missing-key", user_id=None)
+    assert got is None
+
+
+@pytest.mark.asyncio
+async def test_put_then_get_llm_link_cache_roundtrips_bytes(cache_store):
+    blob = b'{"classification": "related"}'
+    await cache_store.put_llm_link_cache(
+        cache_key="lk1",
+        provider="openai",
+        model="gpt-4",
+        schema_version=1,
+        classification_json=blob,
+        user_id=None,
+    )
+    got = await cache_store.get_llm_link_cache("lk1", user_id=None)
+    assert got == blob
+
+
+@pytest.mark.asyncio
+async def test_put_llm_link_cache_updates_on_conflict(cache_store):
+    await cache_store.put_llm_link_cache(
+        cache_key="lk1",
+        provider="openai",
+        model="gpt-4",
+        schema_version=1,
+        classification_json=b"first",
+        user_id=None,
+    )
+    await cache_store.put_llm_link_cache(
+        cache_key="lk1",
+        provider="anthropic",
+        model="claude-4",
+        schema_version=3,
+        classification_json=b"second",
+        user_id=None,
+    )
+    got = await cache_store.get_llm_link_cache("lk1", user_id=None)
+    assert got == b"second"
+
+    async with cache_store._conn.execute(
+        "SELECT provider, model, schema_version FROM llm_link_cache "
+        "WHERE cache_key = ?",
+        ("lk1",),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["provider"] == "anthropic"
+    assert row["model"] == "claude-4"
+    assert row["schema_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_extraction_cache_and_llm_link_cache_are_independent(cache_store):
+    await cache_store.put_extraction_cache(
+        cache_key="shared-key",
+        provider="p",
+        model="m",
+        schema_version=1,
+        result_json=b"extraction-blob",
+        user_id=None,
+    )
+    await cache_store.put_llm_link_cache(
+        cache_key="shared-key",
+        provider="p",
+        model="m",
+        schema_version=1,
+        classification_json=b"link-blob",
+        user_id=None,
+    )
+
+    ext = await cache_store.get_extraction_cache("shared-key", user_id=None)
+    lnk = await cache_store.get_llm_link_cache("shared-key", user_id=None)
+    assert ext == b"extraction-blob"
+    assert lnk == b"link-blob"
+
+    # Fetching from the wrong table returns None for a key that only
+    # exists in the other table.
+    assert (
+        await cache_store.get_extraction_cache("only-link", user_id=None)
+        is None
+    )
+    assert (
+        await cache_store.get_llm_link_cache("only-ext", user_id=None) is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_extraction_cache_preserves_binary_blob(cache_store):
+    # Non-UTF8 byte sequence — ensures the store treats result_json as an
+    # opaque BLOB rather than decoding/re-encoding as text.
+    blob = bytes(range(256))
+    await cache_store.put_extraction_cache(
+        cache_key="binkey",
+        provider="p",
+        model="m",
+        schema_version=1,
+        result_json=blob,
+        user_id=None,
+    )
+    got = await cache_store.get_extraction_cache("binkey", user_id=None)
+    assert got == blob
+    assert len(got) == 256

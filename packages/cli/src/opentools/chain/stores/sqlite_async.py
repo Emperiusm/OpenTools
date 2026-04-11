@@ -1046,3 +1046,108 @@ class AsyncChainStore:
         ) as cursor:
             rows = await cursor.fetchall()
         return [_row_to_parser_output(row) for row in rows]
+
+    # ─── LLM caches ──────────────────────────────────────────────────────
+    #
+    # user_id is accepted for interface compatibility with the protocol but
+    # is NOT yet enforced in SQL — the v3 cache tables have no user_id
+    # column. Task 18's migration v4 adds the column and these methods
+    # will then filter / populate it. Until then all rows are globally
+    # shared (matching historical CLI single-user behaviour).
+
+    @require_initialized
+    async def get_extraction_cache(
+        self, cache_key: str, *, user_id
+    ) -> bytes | None:
+        async with self._conn.execute(
+            "SELECT result_json FROM extraction_cache WHERE cache_key = ?",
+            (cache_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return bytes(row["result_json"]) if row else None
+
+    @require_initialized
+    async def put_extraction_cache(
+        self,
+        *,
+        cache_key: str,
+        provider: str,
+        model: str,
+        schema_version: int,
+        result_json: bytes,
+        user_id,
+    ) -> None:
+        from datetime import datetime as _dt, timezone as _tz
+
+        await self._conn.execute(
+            """
+            INSERT INTO extraction_cache
+                (cache_key, provider, model, schema_version, result_json,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                provider = excluded.provider,
+                model = excluded.model,
+                schema_version = excluded.schema_version,
+                result_json = excluded.result_json
+            """,
+            (
+                cache_key,
+                provider,
+                model,
+                schema_version,
+                result_json,
+                _dt.now(_tz.utc).isoformat(),
+            ),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
+    async def get_llm_link_cache(
+        self, cache_key: str, *, user_id
+    ) -> bytes | None:
+        async with self._conn.execute(
+            "SELECT classification_json FROM llm_link_cache "
+            "WHERE cache_key = ?",
+            (cache_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return bytes(row["classification_json"]) if row else None
+
+    @require_initialized
+    async def put_llm_link_cache(
+        self,
+        *,
+        cache_key: str,
+        provider: str,
+        model: str,
+        schema_version: int,
+        classification_json: bytes,
+        user_id,
+    ) -> None:
+        from datetime import datetime as _dt, timezone as _tz
+
+        await self._conn.execute(
+            """
+            INSERT INTO llm_link_cache
+                (cache_key, provider, model, schema_version,
+                 classification_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                provider = excluded.provider,
+                model = excluded.model,
+                schema_version = excluded.schema_version,
+                classification_json = excluded.classification_json
+            """,
+            (
+                cache_key,
+                provider,
+                model,
+                schema_version,
+                classification_json,
+                _dt.now(_tz.utc).isoformat(),
+            ),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
