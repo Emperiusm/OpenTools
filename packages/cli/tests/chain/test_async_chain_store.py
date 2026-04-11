@@ -1532,3 +1532,127 @@ async def test_put_extraction_cache_preserves_binary_blob(cache_store):
     got = await cache_store.get_extraction_cache("binkey", user_id=None)
     assert got == blob
     assert len(got) == 256
+
+
+# --- Export ---
+
+
+@pytest_asyncio.fixture
+async def export_store(tmp_path):
+    store = AsyncChainStore(db_path=tmp_path / "chain.db")
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_fetch_findings_for_engagement_returns_ids(export_store):
+    await _seed_finding(
+        export_store, engagement_id="engA", finding_id="f1"
+    )
+    await _seed_finding(
+        export_store, engagement_id="engA", finding_id="f2"
+    )
+    await _seed_finding(
+        export_store, engagement_id="engB", finding_id="f3"
+    )
+
+    ids = await export_store.fetch_findings_for_engagement(
+        "engA", user_id=None
+    )
+    assert set(ids) == {"f1", "f2"}
+
+    ids_b = await export_store.fetch_findings_for_engagement(
+        "engB", user_id=None
+    )
+    assert ids_b == ["f3"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_findings_for_engagement_excludes_deleted(export_store):
+    await _seed_finding(
+        export_store, engagement_id="engA", finding_id="f1"
+    )
+    await _seed_finding(
+        export_store, engagement_id="engA", finding_id="f2"
+    )
+    # Soft-delete f2 directly
+    now = datetime.now(timezone.utc).isoformat()
+    await export_store._conn.execute(
+        "UPDATE findings SET deleted_at = ? WHERE id = ?",
+        (now, "f2"),
+    )
+    await export_store._conn.commit()
+
+    ids = await export_store.fetch_findings_for_engagement(
+        "engA", user_id=None
+    )
+    assert ids == ["f1"]
+
+
+@pytest.mark.asyncio
+async def test_export_dump_stream_empty_finding_ids_yields_nothing(
+    export_store,
+):
+    collected = []
+    async for row in export_store.export_dump_stream(
+        finding_ids=[], user_id=None
+    ):
+        collected.append(row)
+    assert collected == []
+
+
+@pytest.mark.asyncio
+async def test_export_dump_stream_yields_entities_mentions_relations(
+    export_store,
+):
+    # Seed 2 findings in engA so we can anchor a relation between them
+    await _seed_finding(
+        export_store, engagement_id="engA", finding_id="fa"
+    )
+    await _seed_finding(
+        export_store, engagement_id="engA", finding_id="fb"
+    )
+
+    # Insert 1 entity
+    ent = _make_entity(id="e1", type="host", canonical_value="host-a")
+    await export_store.upsert_entity(ent, user_id=None)
+
+    # Insert 1 mention tying e1 to fa
+    mention = _make_mention(id="m1", entity_id="e1", finding_id="fa")
+    n = await export_store.add_mentions_bulk([mention], user_id=None)
+    assert n == 1
+
+    # Insert 1 relation between fa and fb
+    relation = _make_relation(
+        id="r1", source_finding_id="fa", target_finding_id="fb"
+    )
+    await export_store.upsert_relations_bulk([relation], user_id=None)
+
+    kinds_seen: list[str] = []
+    rows_seen: list[dict] = []
+    async for row in export_store.export_dump_stream(
+        finding_ids=["fa", "fb"], user_id=None
+    ):
+        kinds_seen.append(row["kind"])
+        rows_seen.append(row)
+        assert "data" in row
+        assert isinstance(row["data"], dict)
+
+    # Should see at least one of each kind
+    assert "entity" in kinds_seen
+    assert "mention" in kinds_seen
+    assert "relation" in kinds_seen
+    assert len(rows_seen) >= 3
+
+    # Spot-check payload contents
+    entity_rows = [r for r in rows_seen if r["kind"] == "entity"]
+    assert any(r["data"]["id"] == "e1" for r in entity_rows)
+
+    mention_rows = [r for r in rows_seen if r["kind"] == "mention"]
+    assert any(r["data"]["id"] == "m1" for r in mention_rows)
+
+    relation_rows = [r for r in rows_seen if r["kind"] == "relation"]
+    assert any(r["data"]["id"] == "r1" for r in relation_rows)

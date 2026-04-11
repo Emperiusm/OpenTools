@@ -1151,3 +1151,75 @@ class AsyncChainStore:
         )
         if self._txn_depth == 0:
             await self._conn.commit()
+
+    # ─── Export ──────────────────────────────────────────────────────────
+
+    @require_initialized
+    async def fetch_findings_for_engagement(
+        self, engagement_id: str, *, user_id
+    ) -> list[str]:
+        async with self._conn.execute(
+            "SELECT id FROM findings "
+            "WHERE engagement_id = ? AND deleted_at IS NULL",
+            (engagement_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [row["id"] for row in rows]
+
+    async def export_dump_stream(
+        self,
+        *,
+        finding_ids: Iterable[str],
+        user_id,
+    ) -> AsyncIterator[dict]:
+        """Stream entity/mention/relation rows for a set of findings.
+
+        Async generator — @require_initialized can't wrap async
+        generators, so check manually. Yields dicts shaped
+        ``{"kind": "entity"|"mention"|"relation", "data": {...}}`` so
+        exporters can serialise without loading the full graph into
+        memory.
+        """
+        if not self._initialized:
+            raise StoreNotInitialized(
+                "AsyncChainStore.export_dump_stream called before "
+                "initialize() or after close()"
+            )
+
+        ids_list = list(finding_ids)
+        if not ids_list:
+            return
+
+        placeholders = ",".join("?" * len(ids_list))
+
+        # Yield entities joined via mentions
+        async with self._conn.execute(
+            f"""
+            SELECT DISTINCT e.* FROM entity e
+            JOIN entity_mention m ON m.entity_id = e.id
+            WHERE m.finding_id IN ({placeholders})
+            """,
+            tuple(ids_list),
+        ) as cursor:
+            async for row in cursor:
+                yield {"kind": "entity", "data": dict(row)}
+
+        # Yield mentions
+        async with self._conn.execute(
+            f"SELECT * FROM entity_mention WHERE finding_id IN ({placeholders})",
+            tuple(ids_list),
+        ) as cursor:
+            async for row in cursor:
+                yield {"kind": "mention", "data": dict(row)}
+
+        # Yield relations (either direction)
+        async with self._conn.execute(
+            f"""
+            SELECT * FROM finding_relation
+            WHERE source_finding_id IN ({placeholders})
+               OR target_finding_id IN ({placeholders})
+            """,
+            tuple(ids_list) * 2,
+        ) as cursor:
+            async for row in cursor:
+                yield {"kind": "relation", "data": dict(row)}
