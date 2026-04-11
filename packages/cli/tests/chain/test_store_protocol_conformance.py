@@ -84,6 +84,7 @@ async def conformant_store(request, tmp_path):
         return
 
     if request.param == "postgres_async":
+        import os
         import uuid as _uuid
 
         _ensure_web_backend_on_path()
@@ -112,13 +113,23 @@ async def conformant_store(request, tmp_path):
 
         from opentools.chain.stores.postgres_async import PostgresChainStore
 
-        db_file = tmp_path / "postgres_conf.db"
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_file}", echo=False
-        )
-
-        async with engine.begin() as conn:
-            await conn.run_sync(web_models.SQLModel.metadata.create_all)
+        real_pg_url = os.environ.get("WEB_TEST_DB_URL")
+        if real_pg_url:
+            # Real Postgres path (CI-only): schema is pre-migrated via
+            # alembic upgrade head before pytest runs. Per-test isolation
+            # is provided by a fresh random user_id — every protocol
+            # method is scoped by user_id, and the teardown block below
+            # deletes all rows for this test's user.
+            engine = create_async_engine(real_pg_url, echo=False)
+        else:
+            # Default path: in-process sqlite+aiosqlite via SQLAlchemy.
+            # Catches ORM/dialect bugs without a running Postgres.
+            db_file = tmp_path / "postgres_conf.db"
+            engine = create_async_engine(
+                f"sqlite+aiosqlite:///{db_file}", echo=False
+            )
+            async with engine.begin() as conn:
+                await conn.run_sync(web_models.SQLModel.metadata.create_all)
 
         Session = async_sessionmaker(
             engine, class_=AsyncSession, expire_on_commit=False
@@ -147,6 +158,42 @@ async def conformant_store(request, tmp_path):
                 try:
                     await session.rollback()
                 finally:
+                    # For real Postgres, purge every row scoped to this
+                    # test's user_id so the shared database does not
+                    # accumulate state between tests. For sqlite+aiosqlite
+                    # the engine is disposed and the temp file is gone,
+                    # so the cleanup is a no-op but still safe.
+                    if real_pg_url:
+                        try:
+                            cleanup = Session()
+                            try:
+                                from sqlalchemy import delete
+                                for model_name in (
+                                    "ChainFindingParserOutput",
+                                    "ChainFindingExtractionState",
+                                    "ChainLlmLinkCache",
+                                    "ChainExtractionCache",
+                                    "ChainLinkerRun",
+                                    "ChainFindingRelation",
+                                    "ChainEntityMention",
+                                    "ChainEntity",
+                                ):
+                                    model = getattr(web_models, model_name, None)
+                                    if model is None or not hasattr(model, "user_id"):
+                                        continue
+                                    await cleanup.execute(
+                                        delete(model).where(model.user_id == user_id)
+                                    )
+                                await cleanup.execute(
+                                    delete(web_models.User).where(
+                                        web_models.User.id == user_id
+                                    )
+                                )
+                                await cleanup.commit()
+                            finally:
+                                await cleanup.close()
+                        except Exception:  # pragma: no cover
+                            pass
                     await session.close()
                     await engine.dispose()
         return
