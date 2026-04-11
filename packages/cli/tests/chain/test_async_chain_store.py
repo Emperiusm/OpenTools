@@ -12,7 +12,12 @@ from opentools.chain.models import (
 )
 from opentools.chain.stores._common import StoreNotInitialized
 from opentools.chain.stores.sqlite_async import AsyncChainStore
-from opentools.chain.types import MentionField, RelationStatus
+from opentools.chain.types import (
+    LinkerMode,
+    LinkerScope,
+    MentionField,
+    RelationStatus,
+)
 
 
 @pytest.mark.asyncio
@@ -1065,3 +1070,187 @@ async def test_entities_for_finding_returns_linked_entities(linker_store):
     )
     got = await linker_store.entities_for_finding("fa", user_id=None)
     assert {e.id for e in got} == {"e1", "e2"}
+
+
+# --- LinkerRun lifecycle ---
+
+
+@pytest.mark.asyncio
+async def test_start_linker_run_returns_linker_run_with_generation(
+    linker_store,
+):
+    run1 = await linker_store.start_linker_run(
+        scope=LinkerScope.ENGAGEMENT,
+        scope_id="eng1",
+        mode=LinkerMode.RULES_ONLY,
+        user_id=None,
+    )
+    assert run1.generation == 1
+    assert run1.scope == LinkerScope.ENGAGEMENT
+    assert run1.scope_id == "eng1"
+    assert run1.mode == LinkerMode.RULES_ONLY
+    assert run1.id.startswith("run_")
+    assert run1.finished_at is None
+    assert run1.findings_processed == 0
+
+    run2 = await linker_store.start_linker_run(
+        scope=LinkerScope.CROSS_ENGAGEMENT,
+        scope_id=None,
+        mode=LinkerMode.RULES_PLUS_LLM,
+        user_id=None,
+    )
+    assert run2.generation == 2
+    assert run2.scope == LinkerScope.CROSS_ENGAGEMENT
+    assert run2.scope_id is None
+
+
+@pytest.mark.asyncio
+async def test_start_linker_run_assigns_unique_ids(linker_store):
+    runs = []
+    for _ in range(5):
+        runs.append(
+            await linker_store.start_linker_run(
+                scope=LinkerScope.ENGAGEMENT,
+                scope_id="eng1",
+                mode=LinkerMode.RULES_ONLY,
+                user_id=None,
+            )
+        )
+    ids = {r.id for r in runs}
+    assert len(ids) == 5
+    generations = sorted(r.generation for r in runs)
+    assert generations == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_current_linker_generation_empty_returns_zero(linker_store):
+    gen = await linker_store.current_linker_generation(user_id=None)
+    assert gen == 0
+
+
+@pytest.mark.asyncio
+async def test_current_linker_generation_returns_max(linker_store):
+    for _ in range(3):
+        await linker_store.start_linker_run(
+            scope=LinkerScope.ENGAGEMENT,
+            scope_id="eng1",
+            mode=LinkerMode.RULES_ONLY,
+            user_id=None,
+        )
+    gen = await linker_store.current_linker_generation(user_id=None)
+    assert gen == 3
+
+
+@pytest.mark.asyncio
+async def test_set_run_status_updates_in_memory_status(linker_store):
+    run = await linker_store.start_linker_run(
+        scope=LinkerScope.ENGAGEMENT,
+        scope_id="eng1",
+        mode=LinkerMode.RULES_ONLY,
+        user_id=None,
+    )
+    # Task 18 migration v4 will add persistent status_text; until then
+    # the status string lives in an in-memory dict on the store.
+    await linker_store.set_run_status(
+        run.id, "extracting entities", user_id=None
+    )
+    assert linker_store._run_status[run.id] == "extracting entities"
+
+    await linker_store.set_run_status(
+        run.id, "linking relations", user_id=None
+    )
+    assert linker_store._run_status[run.id] == "linking relations"
+
+    # fetch_linker_runs still returns the row cleanly even though the
+    # v3 schema cannot persist the status string
+    runs = await linker_store.fetch_linker_runs(user_id=None)
+    assert len(runs) == 1
+    assert runs[0].id == run.id
+
+
+@pytest.mark.asyncio
+async def test_finish_linker_run_populates_stats(linker_store):
+    run = await linker_store.start_linker_run(
+        scope=LinkerScope.ENGAGEMENT,
+        scope_id="eng1",
+        mode=LinkerMode.RULES_ONLY,
+        user_id=None,
+    )
+    await linker_store.finish_linker_run(
+        run.id,
+        findings_processed=10,
+        entities_extracted=25,
+        relations_created=5,
+        relations_updated=2,
+        relations_skipped_sticky=1,
+        rule_stats={"rule_a": 3, "rule_b": 4},
+        duration_ms=1234,
+        error=None,
+        user_id=None,
+    )
+
+    runs = await linker_store.fetch_linker_runs(user_id=None)
+    assert len(runs) == 1
+    finished = runs[0]
+    assert finished.findings_processed == 10
+    assert finished.entities_extracted == 25
+    assert finished.relations_created == 5
+    assert finished.relations_updated == 2
+    assert finished.relations_skipped_sticky == 1
+    assert finished.duration_ms == 1234
+    assert finished.error is None
+    assert finished.finished_at is not None
+    assert finished.rule_stats == {"rule_a": 3, "rule_b": 4}
+
+
+@pytest.mark.asyncio
+async def test_fetch_linker_runs_returns_recent_ordered_desc(linker_store):
+    r1 = await linker_store.start_linker_run(
+        scope=LinkerScope.ENGAGEMENT,
+        scope_id="eng1",
+        mode=LinkerMode.RULES_ONLY,
+        user_id=None,
+    )
+    r2 = await linker_store.start_linker_run(
+        scope=LinkerScope.ENGAGEMENT,
+        scope_id="eng2",
+        mode=LinkerMode.RULES_ONLY,
+        user_id=None,
+    )
+    r3 = await linker_store.start_linker_run(
+        scope=LinkerScope.ENGAGEMENT,
+        scope_id="eng3",
+        mode=LinkerMode.RULES_ONLY,
+        user_id=None,
+    )
+
+    # All three share the same wall clock, so fall back to generation
+    # as a tie-breaker: ordering should at least place the highest
+    # started_at (== most recent generation) first in natural insertion
+    # order, but timestamps may collide at ms resolution. Validate by
+    # checking the set is complete and the first run is not older than
+    # the last.
+    runs = await linker_store.fetch_linker_runs(user_id=None)
+    assert [r.id for r in runs].count(r1.id) == 1
+    assert [r.id for r in runs].count(r2.id) == 1
+    assert [r.id for r in runs].count(r3.id) == 1
+    assert len(runs) == 3
+    # Descending order by started_at — all inserts should be
+    # monotonically increasing timestamps within the same process
+    assert runs[0].started_at >= runs[-1].started_at
+
+
+@pytest.mark.asyncio
+async def test_fetch_linker_runs_respects_limit(linker_store):
+    for _ in range(5):
+        await linker_store.start_linker_run(
+            scope=LinkerScope.ENGAGEMENT,
+            scope_id="eng1",
+            mode=LinkerMode.RULES_ONLY,
+            user_id=None,
+        )
+    runs = await linker_store.fetch_linker_runs(user_id=None, limit=2)
+    assert len(runs) == 2
+
+    runs_all = await linker_store.fetch_linker_runs(user_id=None, limit=10)
+    assert len(runs_all) == 5

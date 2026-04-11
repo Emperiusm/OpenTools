@@ -24,13 +24,14 @@ from opentools.chain.models import (
     Entity,
     EntityMention,
     FindingRelation,
+    LinkerRun,
     RelationReason,
 )
 from opentools.chain.stores._common import (
     StoreNotInitialized,
     require_initialized,
 )
-from opentools.chain.types import MentionField, RelationStatus
+from opentools.chain.types import LinkerMode, LinkerScope, MentionField, RelationStatus
 from opentools.engagement.schema import migrate_async
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,54 @@ def _row_to_relation(row: aiosqlite.Row) -> FindingRelation:
     )
 
 
+def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
+    """Convert an aiosqlite.Row from linker_run to a LinkerRun model.
+
+    Note: migration v3 does not include a status_text column, and the
+    LinkerRun pydantic model does not have a ``status`` field today.
+    Task 18 introduces migration v4 to add persisted status text; until
+    then, in-memory tracking is kept separately on AsyncChainStore.
+    """
+    import orjson
+
+    rule_stats: dict = {}
+    raw = row["rule_stats_json"]
+    if raw:
+        try:
+            rule_stats = orjson.loads(raw)
+        except Exception:
+            rule_stats = {}
+
+    return LinkerRun(
+        id=row["id"],
+        started_at=datetime.fromisoformat(row["started_at"]),
+        finished_at=(
+            datetime.fromisoformat(row["finished_at"])
+            if row["finished_at"]
+            else None
+        ),
+        scope=LinkerScope(row["scope"]),
+        scope_id=row["scope_id"],
+        mode=LinkerMode(row["mode"]),
+        llm_provider=row["llm_provider"],
+        findings_processed=row["findings_processed"],
+        entities_extracted=row["entities_extracted"],
+        relations_created=row["relations_created"],
+        relations_updated=row["relations_updated"],
+        relations_skipped_sticky=row["relations_skipped_sticky"],
+        extraction_cache_hits=row["extraction_cache_hits"],
+        extraction_cache_misses=row["extraction_cache_misses"],
+        llm_calls_made=row["llm_calls_made"],
+        llm_cache_hits=row["llm_cache_hits"],
+        llm_cache_misses=row["llm_cache_misses"],
+        rule_stats=rule_stats,
+        duration_ms=row["duration_ms"],
+        error=row["error"],
+        generation=row["generation"],
+        user_id=row["user_id"],
+    )
+
+
 class AsyncChainStore:
     """Async chain store backed by aiosqlite.
 
@@ -123,6 +172,11 @@ class AsyncChainStore:
         self._initialized = False
         # Transaction depth tracker for nested savepoints
         self._txn_depth = 0
+        # In-memory linker run status tracking. The v3 linker_run schema
+        # has no status column yet — Task 18's migration v4 will add
+        # ``status_text``. Until then, set_run_status writes here so that
+        # behavior is observable within a single process/session.
+        self._run_status: dict[str, str] = {}
 
     async def initialize(self) -> None:
         """Open the connection (if owning), apply pragmas, run migrations.
@@ -776,3 +830,139 @@ class AsyncChainStore:
         ) as cursor:
             rows = await cursor.fetchall()
         return [_row_to_entity(row) for row in rows]
+
+    # ─── LinkerRun lifecycle ─────────────────────────────────────────────
+
+    @require_initialized
+    async def start_linker_run(
+        self,
+        *,
+        scope: LinkerScope,
+        scope_id: str | None,
+        mode: LinkerMode,
+        user_id,
+    ) -> LinkerRun:
+        """Create a linker_run row with atomic generation increment.
+
+        Uses a single INSERT whose ``generation`` column is filled via a
+        ``COALESCE(MAX(generation), 0) + 1`` subquery over ``linker_run``
+        (spec G26), keeping the increment race-free within this
+        connection.
+        """
+        import hashlib
+        import uuid as _uuid
+        from datetime import datetime as _dt, timezone as _tz
+
+        run_id = (
+            "run_"
+            + hashlib.sha256(str(_uuid.uuid4()).encode()).hexdigest()[:12]
+        )
+        now = _dt.now(_tz.utc)
+
+        await self._conn.execute(
+            """
+            INSERT INTO linker_run (
+                id, started_at, scope, scope_id, mode, findings_processed,
+                entities_extracted, relations_created, relations_updated,
+                relations_skipped_sticky, extraction_cache_hits,
+                extraction_cache_misses, llm_calls_made, llm_cache_hits,
+                llm_cache_misses, generation
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                (SELECT COALESCE(MAX(generation), 0) + 1 FROM linker_run)
+            )
+            """,
+            (run_id, now.isoformat(), scope.value, scope_id, mode.value),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+        async with self._conn.execute(
+            "SELECT * FROM linker_run WHERE id = ?", (run_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None  # just inserted
+        return _row_to_linker_run(row)
+
+    @require_initialized
+    async def set_run_status(
+        self, run_id: str, status: str, *, user_id
+    ) -> None:
+        """Record a human-readable status string for a linker run.
+
+        v3 schema has no column to persist this; Task 18 adds
+        ``status_text`` via migration v4. Until then, stash the value in
+        an in-memory dict so behavior is observable within a session.
+        """
+        self._run_status[run_id] = status
+
+    @require_initialized
+    async def finish_linker_run(
+        self,
+        run_id: str,
+        *,
+        findings_processed: int,
+        entities_extracted: int,
+        relations_created: int,
+        relations_updated: int,
+        relations_skipped_sticky: int,
+        rule_stats: dict,
+        duration_ms: int | None = None,
+        error: str | None = None,
+        user_id,
+    ) -> None:
+        import orjson
+        from datetime import datetime as _dt, timezone as _tz
+
+        rule_stats_blob = (
+            orjson.dumps(rule_stats) if rule_stats is not None else None
+        )
+        await self._conn.execute(
+            """
+            UPDATE linker_run
+            SET finished_at = ?,
+                findings_processed = ?,
+                entities_extracted = ?,
+                relations_created = ?,
+                relations_updated = ?,
+                relations_skipped_sticky = ?,
+                rule_stats_json = ?,
+                duration_ms = ?,
+                error = ?
+            WHERE id = ?
+            """,
+            (
+                _dt.now(_tz.utc).isoformat(),
+                findings_processed,
+                entities_extracted,
+                relations_created,
+                relations_updated,
+                relations_skipped_sticky,
+                rule_stats_blob,
+                duration_ms,
+                error,
+                run_id,
+            ),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
+    async def current_linker_generation(self, *, user_id) -> int:
+        async with self._conn.execute(
+            "SELECT COALESCE(MAX(generation), 0) FROM linker_run"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    @require_initialized
+    async def fetch_linker_runs(
+        self, *, user_id, limit: int = 10
+    ) -> list[LinkerRun]:
+        async with self._conn.execute(
+            "SELECT * FROM linker_run ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_linker_run(row) for row in rows]
