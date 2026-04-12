@@ -81,3 +81,25 @@ def test_recipe_step_defaults():
     assert step.step_type == StepType.SHELL
     assert step.on_failure == FailureAction.CONTINUE
     assert step.depends_on is None
+
+
+def test_finding_has_scan_id():
+    from datetime import datetime, timezone
+    from opentools.models import Finding, Severity
+    now = datetime.now(timezone.utc)
+    f = Finding(
+        id="f-1", engagement_id="eng-1", tool="semgrep",
+        severity=Severity.HIGH, title="SQLi", created_at=now,
+        scan_id="scan-1",
+    )
+    assert f.scan_id == "scan-1"
+
+def test_finding_scan_id_defaults_none():
+    from datetime import datetime, timezone
+    from opentools.models import Finding, Severity
+    now = datetime.now(timezone.utc)
+    f = Finding(
+        id="f-1", engagement_id="eng-1", tool="semgrep",
+        severity=Severity.HIGH, title="SQLi", created_at=now,
+    )
+    assert f.scan_id is None
