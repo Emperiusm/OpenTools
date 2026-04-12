@@ -1,0 +1,47 @@
+id: apk-analysis
+name: APK Analysis
+description: Android application security analysis with decompilation and static analysis
+target_types:
+  - apk
+phases:
+  - name: decompile
+    parallel: false
+    tools:
+      - tool: jadx
+        task_type: shell
+        command_template: "jadx -d /tmp/opentools-apk-{scan_id} {target}"
+        priority: 10
+        tier: heavy
+        resource_group: shell
+  - name: static-analysis
+    parallel: true
+    tools:
+      - tool: semgrep
+        task_type: shell
+        command_template: "semgrep --config auto --json /tmp/opentools-apk-{scan_id}"
+        parser: semgrep
+        priority: 20
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
+      - tool: gitleaks
+        task_type: shell
+        command_template: "gitleaks detect --source /tmp/opentools-apk-{scan_id} --report-format json --report-path -"
+        parser: gitleaks
+        priority: 30
+        tier: fast
+        resource_group: shell
+        preferred_output_format: json
+  - name: cpg-analysis
+    parallel: false
+    tools:
+      - tool: codebadger
+        task_type: mcp_call
+        mcp_server: codebadger
+        mcp_tool: generate_cpg
+        mcp_args_template:
+          path: "/tmp/opentools-apk-{scan_id}"
+        priority: 50
+        tier: heavy
+        resource_group: codebadger
+        optional: true

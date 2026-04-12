@@ -1,0 +1,72 @@
+id: web-full
+name: Web Full Scan
+description: Comprehensive web application security assessment
+target_types:
+  - url
+phases:
+  - name: discovery
+    parallel: true
+    tools:
+      - tool: whatweb
+        task_type: shell
+        command_template: "whatweb --color=never --log-json=- {target}"
+        parser: whatweb
+        priority: 10
+        tier: fast
+        resource_group: shell
+        preferred_output_format: json
+      - tool: waybackurls
+        task_type: shell
+        command_template: "echo {target_host} | waybackurls"
+        parser: waybackurls
+        priority: 20
+        tier: fast
+        resource_group: shell
+  - name: content-discovery
+    parallel: true
+    tools:
+      - tool: ffuf
+        task_type: shell
+        command_template: "ffuf -u {target}/FUZZ -w /usr/share/wordlists/dirb/common.txt -o - -of json"
+        parser: ffuf
+        priority: 25
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
+  - name: scanning
+    parallel: true
+    tools:
+      - tool: nuclei
+        task_type: shell
+        command_template: "nuclei -u {target} -json"
+        parser: nuclei
+        priority: 30
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
+      - tool: nikto
+        task_type: shell
+        command_template: "nikto -h {target} -Format json"
+        parser: nikto
+        priority: 40
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
+      - tool: sqlmap
+        task_type: shell
+        command_template: "sqlmap -u {target} --batch --forms --crawl=2 --output-dir=/tmp/sqlmap"
+        parser: sqlmap
+        priority: 60
+        tier: heavy
+        resource_group: shell
+        optional: true
+reactive_edges:
+  - evaluator: "builtin:web_framework_to_ruleset"
+    trigger_tool: "whatweb"
+    max_spawns: 10
+    max_spawns_per_trigger: 3
+  - evaluator: "builtin:high_severity_to_deep_dive"
+    trigger_tool: "*"
+    condition: "severity in ['critical', 'high']"
+    max_spawns: 5
+    max_spawns_per_trigger: 2

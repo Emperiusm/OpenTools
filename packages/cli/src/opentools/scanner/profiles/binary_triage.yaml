@@ -1,0 +1,104 @@
+id: binary-triage
+name: Binary Triage
+description: Initial triage of binary files using static analysis
+target_types:
+  - binary
+phases:
+  - name: format-detection
+    parallel: false
+    tools:
+      - tool: arkana-format
+        task_type: mcp_call
+        mcp_server: arkana
+        mcp_tool: detect_binary_format
+        mcp_args_template:
+          file_path: "{target}"
+        priority: 10
+        tier: fast
+        resource_group: arkana
+        parser: arkana
+  - name: triage
+    parallel: true
+    tools:
+      - tool: arkana-packing
+        task_type: mcp_call
+        mcp_server: arkana
+        mcp_tool: detect_packing
+        mcp_args_template:
+          file_path: "{target}"
+        priority: 20
+        tier: fast
+        resource_group: arkana
+        parser: arkana
+      - tool: arkana-entropy
+        task_type: mcp_call
+        mcp_server: arkana
+        mcp_tool: get_entropy_analysis
+        mcp_args_template:
+          file_path: "{target}"
+        priority: 20
+        tier: fast
+        resource_group: arkana
+        parser: arkana
+      - tool: arkana-triage
+        task_type: mcp_call
+        mcp_server: arkana
+        mcp_tool: get_triage_report
+        mcp_args_template:
+          file_path: "{target}"
+        priority: 30
+        tier: normal
+        resource_group: arkana
+        parser: arkana
+      - tool: arkana-strings
+        task_type: mcp_call
+        mcp_server: arkana
+        mcp_tool: extract_strings_from_binary
+        mcp_args_template:
+          file_path: "{target}"
+        priority: 30
+        tier: normal
+        resource_group: arkana
+        parser: arkana
+  - name: deep-analysis
+    parallel: true
+    tools:
+      - tool: arkana-capa
+        task_type: mcp_call
+        mcp_server: arkana
+        mcp_tool: get_capa_analysis_info
+        mcp_args_template:
+          file_path: "{target}"
+        priority: 40
+        tier: normal
+        resource_group: arkana
+        parser: arkana
+      - tool: arkana-vulns
+        task_type: mcp_call
+        mcp_server: arkana
+        mcp_tool: scan_for_vulnerability_patterns
+        mcp_args_template:
+          file_path: "{target}"
+        priority: 40
+        tier: normal
+        resource_group: arkana
+        parser: arkana
+      - tool: yara
+        task_type: shell
+        command_template: "yara -r /opt/yara-rules/ {target}"
+        parser: yara
+        priority: 50
+        tier: normal
+        resource_group: shell
+        optional: true
+        isolation: container
+reactive_edges:
+  - evaluator: "builtin:packing_detected_to_unpack"
+    trigger_tool: "arkana-packing"
+    max_spawns: 3
+    max_spawns_per_trigger: 1
+  - evaluator: "builtin:high_severity_to_deep_dive"
+    trigger_tool: "*"
+    condition: "severity in ['critical', 'high']"
+    max_spawns: 5
+    max_spawns_per_trigger: 2

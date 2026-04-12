@@ -1,0 +1,34 @@
+id: network-recon
+name: Network Reconnaissance
+description: Network discovery and service enumeration
+target_types:
+  - network
+phases:
+  - name: host-discovery
+    parallel: true
+    tools:
+      - tool: nmap
+        task_type: shell
+        command_template: "nmap -sV -sC -oX - {target}"
+        parser: nmap
+        priority: 10
+        tier: normal
+        resource_group: shell
+      - tool: masscan
+        task_type: shell
+        command_template: "masscan {target} -p1-65535 --rate=1000 -oJ -"
+        parser: masscan
+        priority: 20
+        tier: heavy
+        resource_group: shell
+        optional: true
+        preferred_output_format: json
+reactive_edges:
+  - evaluator: "builtin:open_ports_to_vuln_scan"
+    trigger_tool: "nmap"
+    max_spawns: 20
+    max_spawns_per_trigger: 5
+  - evaluator: "builtin:open_ports_to_vuln_scan"
+    trigger_tool: "masscan"
+    max_spawns: 20
+    max_spawns_per_trigger: 5
