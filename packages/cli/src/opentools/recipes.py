@@ -253,47 +253,29 @@ class RecipeRunner:
             return StepResult(step_name=step.name, status="manual",
                             stdout=f"MCP tool step (execute in Claude): {command}")
 
-        # Shell step
-        start = time.monotonic()
-        try:
-            args = shlex.split(command, posix=(sys.platform != "win32"))
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=step.timeout,
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return StepResult(
-                    step_name=step.name, status="timeout",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                    stderr=f"Timed out after {step.timeout}s",
-                )
+        # Shell step — delegate to shared subprocess
+        from opentools.shared.subprocess import run_streaming
 
-            duration_ms = int((time.monotonic() - start) * 1000)
-            status = "success" if proc.returncode == 0 else "error"
+        args = shlex.split(command, posix=(sys.platform != "win32"))
+        result = await run_streaming(
+            args,
+            on_output=lambda chunk: None,
+            timeout=step.timeout,
+        )
+
+        if result.timed_out:
             return StepResult(
-                step_name=step.name,
-                status=status,
-                exit_code=proc.returncode,
-                stdout=stdout_bytes.decode(errors="replace"),
-                stderr=stderr_bytes.decode(errors="replace"),
-                duration_ms=duration_ms,
+                step_name=step.name, status="timeout",
+                duration_ms=result.duration_ms,
+                stderr=f"Timed out after {step.timeout}s",
             )
-        except FileNotFoundError as e:
-            return StepResult(
-                step_name=step.name, status="error",
-                stderr=f"Command not found: {e}",
-                duration_ms=int((time.monotonic() - start) * 1000),
-            )
-        except Exception as e:
-            return StepResult(
-                step_name=step.name, status="error",
-                stderr=str(e),
-                duration_ms=int((time.monotonic() - start) * 1000),
-            )
+
+        status = "success" if result.exit_code == 0 else "error"
+        return StepResult(
+            step_name=step.name,
+            status=status,
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_ms=result.duration_ms,
+        )
