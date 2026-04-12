@@ -18,6 +18,14 @@ from pydantic import BaseModel
 
 from opentools.scanner.models import TargetType
 
+__all__ = [
+    "DetectedTarget",
+    "SourceMetadata",
+    "TargetDetector",
+    "TargetValidator",
+    "ValidationResult",
+]
+
 try:
     import aiohttp
 except ImportError:
