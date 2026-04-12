@@ -87,24 +87,18 @@ def upgrade() -> None:
                 ),
             )
 
-    # Postgres-only: convert JSON TEXT columns to JSONB, mark caches UNLOGGED
-    # (spec O17). JSONB is a strict superset of JSON TEXT for our use case —
-    # orjson-produced bytes round-trip losslessly.
+    # Postgres-only: mark cache tables UNLOGGED (spec O17) for faster
+    # writes since their contents are regenerable. The earlier draft of
+    # this migration also converted reasons_json / confirmed_at_reasons_json
+    # / rule_stats_json from TEXT to JSONB, but the SQLModel table
+    # declarations still use ``Column(Text)`` and ``PostgresChainStore``
+    # writes already-serialized orjson strings, which asyncpg rejects
+    # against a JSONB column with ``DatatypeMismatchError: column is of
+    # type jsonb but expression is of type character varying``. The
+    # columns stay TEXT on Postgres, matching SQLite behavior. No code
+    # path uses JSONB-specific operators on these columns, so the
+    # conversion was a nice-to-have rather than a requirement.
     if dialect == "postgresql":
-        op.execute(
-            "ALTER TABLE chain_finding_relation "
-            "ALTER COLUMN reasons_json TYPE JSONB USING reasons_json::jsonb"
-        )
-        op.execute(
-            "ALTER TABLE chain_finding_relation "
-            "ALTER COLUMN confirmed_at_reasons_json TYPE JSONB "
-            "USING confirmed_at_reasons_json::jsonb"
-        )
-        op.execute(
-            "ALTER TABLE chain_linker_run "
-            "ALTER COLUMN rule_stats_json TYPE JSONB "
-            "USING rule_stats_json::jsonb"
-        )
         op.execute("ALTER TABLE chain_extraction_cache SET UNLOGGED")
         op.execute("ALTER TABLE chain_llm_link_cache SET UNLOGGED")
 
@@ -116,21 +110,6 @@ def downgrade() -> None:
     if dialect == "postgresql":
         op.execute("ALTER TABLE chain_llm_link_cache SET LOGGED")
         op.execute("ALTER TABLE chain_extraction_cache SET LOGGED")
-        op.execute(
-            "ALTER TABLE chain_linker_run "
-            "ALTER COLUMN rule_stats_json TYPE TEXT "
-            "USING rule_stats_json::text"
-        )
-        op.execute(
-            "ALTER TABLE chain_finding_relation "
-            "ALTER COLUMN confirmed_at_reasons_json TYPE TEXT "
-            "USING confirmed_at_reasons_json::text"
-        )
-        op.execute(
-            "ALTER TABLE chain_finding_relation "
-            "ALTER COLUMN reasons_json TYPE TEXT "
-            "USING reasons_json::text"
-        )
 
     # Drop cache tables created by this migration. These did not exist
     # before 004 (they were CLI-only prior) so dropping is correct.
