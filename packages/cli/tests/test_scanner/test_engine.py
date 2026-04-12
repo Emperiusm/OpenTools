@@ -601,3 +601,117 @@ class TestEngineCache:
         engine = _make_engine(tasks=[task], executor=mock_exec)
         await engine.run()
         assert "a" in mock_exec.executed
+
+
+# ---------------------------------------------------------------------------
+# Task 13: Integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestEngineIntegration:
+    @pytest.mark.asyncio
+    async def test_complex_dag_with_reactive_edges_and_cache(self):
+        """End-to-end: multi-phase DAG with caching, failure, reactive edges.
+
+        Graph:
+            preflight → (semgrep, gitleaks) → dedup_merge
+            semgrep has a reactive edge that spawns nuclei if findings found
+            gitleaks is cached
+        """
+        execution_log: list[str] = []
+
+        class LoggingExecutor:
+            async def execute(self, task, on_output, cancellation):
+                execution_log.append(task.id)
+                on_output(f"output-{task.id}".encode())
+                return TaskOutput(exit_code=0, stdout=f"output-{task.id}", duration_ms=10)
+
+        logging_exec = LoggingExecutor()
+
+        preflight = _make_task("preflight", priority=10)
+        semgrep = _make_task("semgrep", depends_on=["preflight"], priority=30)
+        gitleaks = _make_task("gitleaks", depends_on=["preflight"], priority=30)
+        gitleaks = gitleaks.model_copy(update={"cache_key": "gitleaks-key"})
+        dedup = _make_task("dedup_merge", depends_on=["semgrep", "gitleaks"], priority=50)
+
+        nuclei_task = _make_task("nuclei")
+        edge = ReactiveEdge(
+            id="edge-nuclei",
+            trigger_task_id="semgrep",
+            evaluator="builtin:findings_to_nuclei",
+            spawns=[nuclei_task],
+        )
+        semgrep = semgrep.model_copy(update={"reactive_edges": [edge]})
+
+        pool = AdaptiveResourcePool(global_limit=4)
+        cancel = CancellationToken()
+        engine = ScanEngine(
+            scan=_make_scan(),
+            resource_pool=pool,
+            executors={
+                TaskType.SHELL: logging_exec,
+                TaskType.DOCKER_EXEC: logging_exec,
+                TaskType.MCP_CALL: logging_exec,
+            },
+            event_bus=EventBus(),
+            cancellation=cancel,
+        )
+        engine.load_tasks([preflight, semgrep, gitleaks, dedup])
+
+        engine.set_cache({
+            "gitleaks-key": TaskOutput(
+                exit_code=0, stdout="no leaks", cached=True, duration_ms=0
+            ),
+        })
+
+        def findings_to_nuclei(task, output, edge):
+            return edge.spawns or []
+        engine.register_edge_evaluator("builtin:findings_to_nuclei", findings_to_nuclei)
+
+        await engine.run()
+
+        assert engine.scan.status == ScanStatus.COMPLETED
+        assert execution_log[0] == "preflight"
+        assert "gitleaks" not in execution_log  # cached
+        assert "semgrep" in execution_log
+        assert "nuclei" in execution_log
+        assert "dedup_merge" in execution_log
+        dedup_idx = execution_log.index("dedup_merge")
+        semgrep_idx = execution_log.index("semgrep")
+        assert dedup_idx > semgrep_idx
+        assert engine._tasks["gitleaks"].cached is True
+
+        for tid in ["preflight", "semgrep", "gitleaks", "dedup_merge", "nuclei"]:
+            assert engine._tasks[tid].status == TaskStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_with_independent_branches(self):
+        """One branch fails, the other succeeds. Scan still completes.
+
+        Graph:
+            root → (branch_a, branch_b)
+            branch_a → dep_a (fails)
+            branch_b → dep_b (succeeds)
+        """
+        mock_exec = MockExecutor(
+            results={
+                "branch_a": TaskOutput(exit_code=1, stderr="segfault", duration_ms=5),
+            }
+        )
+        tasks = [
+            _make_task("root"),
+            _make_task("branch_a", depends_on=["root"]),
+            _make_task("branch_b", depends_on=["root"]),
+            _make_task("dep_a", depends_on=["branch_a"]),
+            _make_task("dep_b", depends_on=["branch_b"]),
+        ]
+        engine = _make_engine(tasks=tasks, executor=mock_exec)
+
+        await engine.run()
+
+        assert engine.scan.status == ScanStatus.COMPLETED
+        assert engine._tasks["root"].status == TaskStatus.COMPLETED
+        assert engine._tasks["branch_a"].status == TaskStatus.FAILED
+        assert engine._tasks["branch_b"].status == TaskStatus.COMPLETED
+        assert engine._tasks["dep_a"].status == TaskStatus.SKIPPED
+        assert engine._tasks["dep_b"].status == TaskStatus.COMPLETED
