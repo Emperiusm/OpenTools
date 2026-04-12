@@ -31,12 +31,13 @@ def sample_config():
 
 
 def test_check_all_returns_report(sample_config):
+    import sys
     runner = PreflightRunner(sample_config)
     with patch("opentools.preflight.shutil.which", return_value=None):
         with patch("opentools.preflight.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)
             report = runner.check_all()
-    assert report.platform == "win32"
+    assert report.platform == sys.platform
     assert len(report.tools) > 0
     assert report.summary.total > 0
 
