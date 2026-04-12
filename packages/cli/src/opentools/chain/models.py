@@ -1,7 +1,7 @@
 """Pydantic models for chain data layer.
 
 The web backend mirrors these as SQLModel tables in packages/web/backend/app/models.py.
-The CLI SQLite backend creates corresponding tables via SQLAlchemy Core in store_extensions.py.
+The CLI SQLite backend creates corresponding tables via the migration in engagement.schema.
 """
 from __future__ import annotations
 
@@ -98,6 +98,7 @@ class LinkerRun(BaseModel):
     rule_stats: dict = Field(default_factory=dict)
     duration_ms: int | None = None
     error: str | None = None
+    status: str = "pending"
     generation: int = 0
     user_id: UUID | None = None
 

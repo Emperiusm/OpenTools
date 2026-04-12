@@ -6,7 +6,40 @@ from typing import Optional
 
 from fastapi_users import schemas as fu_schemas
 from sqlalchemy import Column, Index, Text, JSON, UniqueConstraint
+from sqlalchemy.types import TypeDecorator, DateTime
 from sqlmodel import Field, SQLModel
+
+
+class TZAwareDateTime(TypeDecorator):
+    """DateTime that coerces naive values to UTC on bind and result.
+
+    SQLModel's default `datetime` type inference produces
+    ``DateTime(timezone=False)``. When those fields bind against a
+    PostgreSQL ``TIMESTAMPTZ`` column (every Alembic migration in this
+    project declares ``sa.DateTime(timezone=True)``), asyncpg raises
+    ``DataError: can't subtract offset-naive and offset-aware datetimes``
+    because SQLAlchemy strips tz info before handing the value to the
+    DBAPI. This TypeDecorator plugs the gap: it tells SQLAlchemy the
+    column is ``DateTime(timezone=True)`` AND stamps UTC on any naive
+    value that slips through. Idempotent on already-aware values.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and getattr(value, "tzinfo", None) is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and getattr(value, "tzinfo", None) is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+# Keyword args shared by every SQLModel datetime Field() below.
+_TZ_KW = {"sa_type": TZAwareDateTime}
 
 
 # --- User -----------------------------------------------------------------
@@ -19,7 +52,7 @@ class User(SQLModel, table=True):
     is_active: bool = Field(default=True)
     is_superuser: bool = Field(default=False)
     is_verified: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), **_TZ_KW)
 
 
 class UserRead(fu_schemas.BaseUser[uuid.UUID]):
@@ -42,8 +75,8 @@ class Engagement(SQLModel, table=True):
     scope: Optional[str] = None
     status: str = Field(default="active")
     skills_used: Optional[str] = Field(default=None, sa_column=Column(JSON))
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime = Field(**_TZ_KW)
+    updated_at: datetime = Field(**_TZ_KW)
 
 
 # --- Finding --------------------------------------------------------------
@@ -70,8 +103,8 @@ class Finding(SQLModel, table=True):
     cvss: Optional[float] = None
     false_positive: bool = Field(default=False)
     dedup_confidence: Optional[str] = None
-    created_at: datetime
-    deleted_at: Optional[datetime] = None
+    created_at: datetime = Field(**_TZ_KW)
+    deleted_at: Optional[datetime] = Field(default=None, **_TZ_KW)
 
     # Note: search_vector (tsvector) added via migration, not SQLModel field
 
@@ -83,7 +116,7 @@ class TimelineEvent(SQLModel, table=True):
     id: str = Field(primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
     engagement_id: str = Field(foreign_key="engagement.id")
-    timestamp: datetime
+    timestamp: datetime = Field(**_TZ_KW)
     source: str
     event: str
     details: Optional[str] = None
@@ -101,8 +134,8 @@ class IOC(SQLModel, table=True):
     ioc_type: str
     value: str
     context: Optional[str] = None
-    first_seen: Optional[datetime] = None
-    last_seen: Optional[datetime] = None
+    first_seen: Optional[datetime] = Field(default=None, **_TZ_KW)
+    last_seen: Optional[datetime] = Field(default=None, **_TZ_KW)
     source_finding_id: Optional[str] = Field(default=None, foreign_key="finding.id")
 
 
@@ -117,7 +150,7 @@ class Artifact(SQLModel, table=True):
     artifact_type: str
     description: Optional[str] = None
     source_tool: Optional[str] = None
-    created_at: datetime
+    created_at: datetime = Field(**_TZ_KW)
 
 
 # --- AuditEntry -----------------------------------------------------------
@@ -126,7 +159,7 @@ class AuditEntry(SQLModel, table=True):
     __tablename__ = "audit_entry"
     id: str = Field(primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
-    timestamp: datetime
+    timestamp: datetime = Field(**_TZ_KW)
     command: str
     args: Optional[str] = Field(default=None, sa_column=Column(JSON))
     engagement_id: Optional[str] = None
@@ -149,7 +182,7 @@ class IOCEnrichment(SQLModel, table=True):
     data: Optional[str] = None  # JSON string
     risk_score: Optional[int] = None
     tags: Optional[str] = None  # JSON array
-    fetched_at: datetime
+    fetched_at: datetime = Field(**_TZ_KW)
     ttl_seconds: int = 86400
 
 
@@ -162,8 +195,8 @@ class ChainEntity(SQLModel, table=True):
     user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
     type: str = Field(index=True)
     canonical_value: str
-    first_seen_at: datetime
-    last_seen_at: datetime
+    first_seen_at: datetime = Field(**_TZ_KW)
+    last_seen_at: datetime = Field(**_TZ_KW)
     mention_count: int = Field(default=0)
 
     __table_args__ = (
@@ -184,7 +217,7 @@ class ChainEntityMention(SQLModel, table=True):
     offset_end: Optional[int] = None
     extractor: str
     confidence: float
-    created_at: datetime
+    created_at: datetime = Field(**_TZ_KW)
 
     __table_args__ = (
         UniqueConstraint("entity_id", "finding_id", "field", "offset_start", name="uq_chain_mention"),
@@ -207,8 +240,8 @@ class ChainFindingRelation(SQLModel, table=True):
     llm_relation_type: Optional[str] = None
     llm_confidence: Optional[float] = None
     confirmed_at_reasons_json: Optional[str] = Field(default=None, sa_column=Column(Text))
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime = Field(**_TZ_KW)
+    updated_at: datetime = Field(**_TZ_KW)
 
     __table_args__ = (
         UniqueConstraint(
@@ -223,8 +256,8 @@ class ChainLinkerRun(SQLModel, table=True):
     __tablename__ = "chain_linker_run"
     id: str = Field(primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
-    started_at: datetime
-    finished_at: Optional[datetime] = None
+    started_at: datetime = Field(**_TZ_KW)
+    finished_at: Optional[datetime] = Field(default=None, **_TZ_KW)
     scope: str
     scope_id: Optional[str] = None
     mode: str
@@ -244,3 +277,76 @@ class ChainLinkerRun(SQLModel, table=True):
     error: Optional[str] = None
     generation: int = Field(default=0)
     status_text: Optional[str] = Field(default=None)
+
+
+class ChainExtractionCache(SQLModel, table=True):
+    """LLM extraction cache entries, user-scoped (spec G37)."""
+    __tablename__ = "chain_extraction_cache"
+    cache_key: str = Field(primary_key=True)
+    provider: str
+    model: str
+    schema_version: int
+    result_json: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc), **_TZ_KW
+    )
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )
+
+
+class ChainLlmLinkCache(SQLModel, table=True):
+    """LLM link-classification cache entries, user-scoped (spec G37)."""
+    __tablename__ = "chain_llm_link_cache"
+    cache_key: str = Field(primary_key=True)
+    provider: str
+    model: str
+    schema_version: int
+    classification_json: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc), **_TZ_KW
+    )
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )
+
+
+class ChainFindingExtractionState(SQLModel, table=True):
+    """Change detection for re-extraction (mirrors CLI finding_extraction_state).
+
+    Stores the latest extraction input hash and extractor set seen per
+    finding so the pipeline can skip findings whose inputs have not
+    changed. User-scoped via nullable FK (spec G37).
+    """
+    __tablename__ = "chain_finding_extraction_state"
+    finding_id: str = Field(
+        primary_key=True, foreign_key="finding.id"
+    )
+    extraction_input_hash: str
+    last_extracted_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc), **_TZ_KW
+    )
+    last_extractor_set_json: bytes
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )
+
+
+class ChainFindingParserOutput(SQLModel, table=True):
+    """Structured parser output, keyed on (finding_id, parser_name).
+
+    Feeds parser-aware extractors that consume already-parsed tool
+    output rather than re-parsing raw finding descriptions.
+    """
+    __tablename__ = "chain_finding_parser_output"
+    finding_id: str = Field(
+        primary_key=True, foreign_key="finding.id"
+    )
+    parser_name: str = Field(primary_key=True)
+    data_json: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc), **_TZ_KW
+    )
+    user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="user.id", index=True, nullable=True
+    )

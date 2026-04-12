@@ -1,13 +1,16 @@
-import asyncio
 from datetime import datetime, timezone
+
+import pytest
 
 from opentools.chain.config import ChainConfig
 from opentools.chain.extractors.pipeline import ExtractionPipeline
 from opentools.chain.linker.engine import LinkerEngine, get_default_rules
-from opentools.chain.linker.llm_pass import llm_link_pass, LLMLinkPassResult
+from opentools.chain.linker.llm_pass import LLMLinkPassResult, llm_link_pass
 from opentools.chain.models import LLMLinkClassification
 from opentools.chain.types import RelationStatus
 from opentools.models import Finding, FindingStatus, Severity
+
+pytestmark = pytest.mark.asyncio
 
 
 class _MockProvider:
@@ -33,10 +36,11 @@ class _MockProvider:
         return ""
 
 
-def _seed_candidate_edge(engagement_store, chain_store):
+async def _seed_candidate_edge(engagement_store, chain_store):
     now = datetime.now(timezone.utc)
-    # Two findings sharing a strong entity (IP) — weight may land at auto_confirmed,
-    # but tests manually demote to CANDIDATE via SQL before calling llm_link_pass.
+    # Two findings sharing a strong entity (IP) — weight may land at
+    # auto_confirmed, but tests manually demote to CANDIDATE via the
+    # protocol before calling llm_link_pass.
     a = Finding(
         id="fl_a", engagement_id="eng_test", tool="nmap",
         severity=Severity.HIGH, status=FindingStatus.DISCOVERED,
@@ -52,21 +56,40 @@ def _seed_candidate_edge(engagement_store, chain_store):
 
     cfg = ChainConfig()
     pipeline = ExtractionPipeline(store=chain_store, config=cfg)
-    pipeline.extract_for_finding(a)
-    pipeline.extract_for_finding(b)
+    await pipeline.extract_for_finding(a)
+    await pipeline.extract_for_finding(b)
 
-    engine = LinkerEngine(store=chain_store, config=cfg, rules=get_default_rules(cfg))
-    ctx = engine.make_context(user_id=None)
-    engine.link_finding(a.id, user_id=None, context=ctx)
+    engine = LinkerEngine(
+        store=chain_store, config=cfg, rules=get_default_rules(cfg)
+    )
+    ctx = await engine.make_context(user_id=None)
+    await engine.link_finding(a.id, user_id=None, context=ctx)
     return a, b
 
 
-def test_llm_pass_dry_run(engagement_store_and_chain):
+async def _demote_all_to_candidate(chain_store):
+    """Force every finding_relation row to CANDIDATE status via the protocol.
+
+    The linker may legitimately land an edge at AUTO_CONFIRMED; the LLM
+    pass tests need a candidate edge to exercise classification. We
+    fetch every relation regardless of status, rewrite its status, and
+    upsert it back.
+    """
+    all_statuses = set(RelationStatus)
+    relations = await chain_store.fetch_relations_in_scope(
+        user_id=None, statuses=all_statuses
+    )
+    demoted = [r.model_copy(update={"status": RelationStatus.CANDIDATE}) for r in relations]
+    if demoted:
+        await chain_store.upsert_relations_bulk(demoted, user_id=None)
+
+
+async def test_llm_pass_dry_run(engagement_store_and_chain):
     engagement_store, chain_store, _ = engagement_store_and_chain
-    _seed_candidate_edge(engagement_store, chain_store)
+    await _seed_candidate_edge(engagement_store, chain_store)
 
     provider = _MockProvider()
-    result = llm_link_pass(
+    result = await llm_link_pass(
         provider=provider, store=chain_store,
         min_weight=0.0, max_weight=5.0,
         dry_run=True,
@@ -75,38 +98,29 @@ def test_llm_pass_dry_run(engagement_store_and_chain):
     assert result.llm_calls == 0
 
 
-def test_llm_pass_promotes_related_high_confidence(engagement_store_and_chain):
+async def test_llm_pass_promotes_related_high_confidence(engagement_store_and_chain):
     engagement_store, chain_store, _ = engagement_store_and_chain
-    _seed_candidate_edge(engagement_store, chain_store)
-
-    # Manually set the edge to CANDIDATE status (the linker may have already made it AUTO_CONFIRMED)
-    chain_store._conn.execute(
-        "UPDATE finding_relation SET status = ?",
-        (RelationStatus.CANDIDATE.value,),
-    )
-    chain_store._conn.commit()
+    await _seed_candidate_edge(engagement_store, chain_store)
+    await _demote_all_to_candidate(chain_store)
 
     provider = _MockProvider()  # default: related=True, confidence=0.9
-    result = llm_link_pass(
+    result = await llm_link_pass(
         provider=provider, store=chain_store,
         min_weight=0.0, max_weight=5.0,
     )
     assert result.promoted >= 1
 
-    row = chain_store.execute_one("SELECT status, llm_rationale FROM finding_relation LIMIT 1")
-    assert row["status"] == RelationStatus.AUTO_CONFIRMED.value
-    assert row["llm_rationale"] == "default mock"
-
-
-def test_llm_pass_rejects_unrelated(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    _seed_candidate_edge(engagement_store, chain_store)
-
-    chain_store._conn.execute(
-        "UPDATE finding_relation SET status = ?",
-        (RelationStatus.CANDIDATE.value,),
+    relations = await chain_store.fetch_relations_in_scope(
+        user_id=None, statuses={RelationStatus.AUTO_CONFIRMED}
     )
-    chain_store._conn.commit()
+    assert len(relations) >= 1
+    assert relations[0].llm_rationale == "default mock"
+
+
+async def test_llm_pass_rejects_unrelated(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
+    await _seed_candidate_edge(engagement_store, chain_store)
+    await _demote_all_to_candidate(chain_store)
 
     provider = _MockProvider(responses={
         ("fl_a", "fl_b"): LLMLinkClassification(
@@ -114,66 +128,56 @@ def test_llm_pass_rejects_unrelated(engagement_store_and_chain):
             rationale="nope", confidence=0.95,
         ),
     })
-    result = llm_link_pass(
+    result = await llm_link_pass(
         provider=provider, store=chain_store,
         min_weight=0.0, max_weight=5.0,
     )
     assert result.rejected >= 1
 
-    row = chain_store.execute_one("SELECT status FROM finding_relation LIMIT 1")
-    assert row["status"] == RelationStatus.REJECTED.value
-
-
-def test_llm_pass_cache_hit(engagement_store_and_chain):
-    engagement_store, chain_store, _ = engagement_store_and_chain
-    _seed_candidate_edge(engagement_store, chain_store)
-
-    chain_store._conn.execute(
-        "UPDATE finding_relation SET status = ?",
-        (RelationStatus.CANDIDATE.value,),
+    relations = await chain_store.fetch_relations_in_scope(
+        user_id=None, statuses={RelationStatus.REJECTED}
     )
-    chain_store._conn.commit()
+    assert len(relations) >= 1
+
+
+async def test_llm_pass_cache_hit(engagement_store_and_chain):
+    engagement_store, chain_store, _ = engagement_store_and_chain
+    await _seed_candidate_edge(engagement_store, chain_store)
+    await _demote_all_to_candidate(chain_store)
 
     provider = _MockProvider()
-    # First run populates the cache
-    llm_link_pass(provider=provider, store=chain_store, min_weight=0.0, max_weight=5.0)
-
-    # Reset status to CANDIDATE again and re-run
-    chain_store._conn.execute(
-        "UPDATE finding_relation SET status = ?",
-        (RelationStatus.CANDIDATE.value,),
+    # First run populates the cache.
+    await llm_link_pass(
+        provider=provider, store=chain_store,
+        min_weight=0.0, max_weight=5.0,
     )
-    chain_store._conn.commit()
 
-    result = llm_link_pass(provider=provider, store=chain_store, min_weight=0.0, max_weight=5.0)
+    # Reset status to CANDIDATE again and re-run.
+    await _demote_all_to_candidate(chain_store)
+
+    result = await llm_link_pass(
+        provider=provider, store=chain_store,
+        min_weight=0.0, max_weight=5.0,
+    )
     assert result.cache_hits >= 1
     assert result.llm_calls == 0
 
 
-def test_llm_link_pass_async_promotes_via_await(engagement_store_and_chain):
-    """The async variant must promote candidate edges exactly like the sync one."""
-    from opentools.chain.linker.llm_pass import llm_link_pass_async
-    from opentools.chain.types import RelationStatus
-
+async def test_llm_link_pass_promotes_via_await(engagement_store_and_chain):
+    """Baseline: the async variant must promote candidate edges end-to-end."""
     engagement_store, chain_store, _ = engagement_store_and_chain
-    _seed_candidate_edge(engagement_store, chain_store)
-
-    chain_store._conn.execute(
-        "UPDATE finding_relation SET status = ?",
-        (RelationStatus.CANDIDATE.value,),
-    )
-    chain_store._conn.commit()
+    await _seed_candidate_edge(engagement_store, chain_store)
+    await _demote_all_to_candidate(chain_store)
 
     provider = _MockProvider()  # default: related=True, confidence=0.9
 
-    async def _run():
-        return await llm_link_pass_async(
-            provider=provider, store=chain_store,
-            min_weight=0.0, max_weight=5.0,
-        )
-
-    result = asyncio.run(_run())
+    result = await llm_link_pass(
+        provider=provider, store=chain_store,
+        min_weight=0.0, max_weight=5.0,
+    )
     assert result.promoted >= 1
 
-    row = chain_store.execute_one("SELECT status FROM finding_relation LIMIT 1")
-    assert row["status"] == RelationStatus.AUTO_CONFIRMED.value
+    relations = await chain_store.fetch_relations_in_scope(
+        user_id=None, statuses={RelationStatus.AUTO_CONFIRMED}
+    )
+    assert len(relations) >= 1

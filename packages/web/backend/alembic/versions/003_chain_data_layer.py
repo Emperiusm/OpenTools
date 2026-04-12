@@ -6,7 +6,6 @@ Create Date: 2026-04-10
 """
 from alembic import op
 import sqlalchemy as sa
-import sqlmodel
 
 revision = "003"
 down_revision = "002"
@@ -19,7 +18,7 @@ def upgrade() -> None:
     op.create_table(
         "chain_entity",
         sa.Column("id", sa.String(), nullable=False),
-        sa.Column("user_id", sqlmodel.sql.sqltypes.GUID(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("type", sa.String(), nullable=False),
         sa.Column("canonical_value", sa.String(), nullable=False),
         sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=False),
@@ -36,7 +35,7 @@ def upgrade() -> None:
     op.create_table(
         "chain_entity_mention",
         sa.Column("id", sa.String(), nullable=False),
-        sa.Column("user_id", sqlmodel.sql.sqltypes.GUID(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("entity_id", sa.String(), nullable=False),
         sa.Column("finding_id", sa.String(), nullable=False),
         sa.Column("field", sa.String(), nullable=False),
@@ -61,7 +60,7 @@ def upgrade() -> None:
     op.create_table(
         "chain_finding_relation",
         sa.Column("id", sa.String(), nullable=False),
-        sa.Column("user_id", sqlmodel.sql.sqltypes.GUID(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("source_finding_id", sa.String(), nullable=False),
         sa.Column("target_finding_id", sa.String(), nullable=False),
         sa.Column("weight", sa.Float(), nullable=False),
@@ -90,7 +89,7 @@ def upgrade() -> None:
     op.create_table(
         "chain_linker_run",
         sa.Column("id", sa.String(), nullable=False),
-        sa.Column("user_id", sqlmodel.sql.sqltypes.GUID(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("scope", sa.String(), nullable=False),

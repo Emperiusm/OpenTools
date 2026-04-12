@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from opentools.chain.cli import app
 from opentools.chain.config import ChainConfig
 from opentools.chain.extractors.pipeline import ExtractionPipeline
 from opentools.chain.linker.engine import LinkerEngine, get_default_rules
+from opentools.chain.stores.sqlite_async import AsyncChainStore
 from opentools.engagement.store import EngagementStore
 from opentools.models import Engagement, EngagementStatus, EngagementType, Finding, FindingStatus, Severity
 
@@ -42,22 +44,32 @@ def populated_db(tmp_path, monkeypatch):
     )
     engagement_store.add_finding(f1)
     engagement_store.add_finding(f2)
+    # Close the sync engagement connection before opening the async
+    # store so aiosqlite doesn't contend on a still-open sqlite3 handle.
+    engagement_store._conn.close()
 
-    from opentools.chain.store_extensions import ChainStore
-    chain_store = ChainStore(engagement_store._conn)
-    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(f1)
-    pipeline.extract_for_finding(f2)
-    engine = LinkerEngine(store=chain_store, config=ChainConfig(), rules=get_default_rules(ChainConfig()))
-    ctx = engine.make_context(user_id=None)
-    engine.link_finding(f1.id, user_id=None, context=ctx)
-    engine.link_finding(f2.id, user_id=None, context=ctx)
+    async def _seed_chain() -> None:
+        chain_store = AsyncChainStore(db_path=db_path)
+        await chain_store.initialize()
+        try:
+            cfg = ChainConfig()
+            pipeline = ExtractionPipeline(store=chain_store, config=cfg)
+            await pipeline.extract_for_finding(f1)
+            await pipeline.extract_for_finding(f2)
+            engine = LinkerEngine(
+                store=chain_store, config=cfg, rules=get_default_rules(cfg),
+            )
+            ctx = await engine.make_context(user_id=None)
+            await engine.link_finding(f1.id, user_id=None, context=ctx)
+            await engine.link_finding(f2.id, user_id=None, context=ctx)
+        finally:
+            await chain_store.close()
+
+    asyncio.run(_seed_chain())
 
     # Monkeypatch the CLI's default db path
     from opentools.chain import cli as chain_cli
     monkeypatch.setattr(chain_cli, "_default_db_path", lambda: db_path)
-    # Close our store so the CLI can open it fresh
-    engagement_store._conn.close()
     return db_path
 
 

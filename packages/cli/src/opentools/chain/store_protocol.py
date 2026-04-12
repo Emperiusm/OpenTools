@@ -116,6 +116,34 @@ class ChainStoreProtocol(Protocol):
         user_id: UUID | None,
     ) -> list[tuple[str, str]]: ...
 
+    async def fetch_finding_ids_for_entity(
+        self,
+        entity_id: str,
+        *,
+        user_id: UUID | None,
+    ) -> list[str]:
+        """Return distinct finding ids that mention ``entity_id``.
+
+        Used by the query engine's endpoint resolver to map
+        ``type:value`` endpoints onto the master-graph node set.
+        """
+        ...
+
+    async def fetch_entity_mentions_for_engagement(
+        self,
+        engagement_id: str,
+        *,
+        entity_type: str,
+        user_id: UUID | None,
+    ) -> list[tuple[str, str]]:
+        """Return ``(finding_id, canonical_value)`` pairs for all
+        mentions of entities of ``entity_type`` that belong to
+        non-deleted findings in ``engagement_id``.
+
+        Drives the external-to-internal and mitre-coverage presets.
+        """
+        ...
+
     # --- Relation CRUD ---
 
     async def upsert_relations_bulk(
@@ -224,6 +252,24 @@ class ChainStoreProtocol(Protocol):
         user_id: UUID | None,
     ) -> None: ...
 
+    async def mark_run_failed(
+        self,
+        run_id: str,
+        *,
+        error: str,
+        user_id: UUID | None,
+    ) -> None:
+        """Mark a linker run as failed and record the error message.
+
+        Sets ``status_text='failed'``, ``error=<message>``, and
+        ``finished_at=<now>``. Used by worker failure handlers to
+        finalize a run row without going through ``finish_linker_run``
+        (which expects a full set of counters for the success path).
+
+        No-op if the run id doesn't exist; does not raise.
+        """
+        ...
+
     async def current_linker_generation(
         self, *, user_id: UUID | None
     ) -> int: ...
@@ -287,6 +333,10 @@ class ChainStoreProtocol(Protocol):
 
     async def fetch_findings_for_engagement(
         self, engagement_id: str, *, user_id: UUID | None
+    ) -> list[str]: ...
+
+    async def fetch_all_finding_ids(
+        self, *, user_id: UUID | None
     ) -> list[str]: ...
 
     def export_dump_stream(

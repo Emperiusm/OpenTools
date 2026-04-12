@@ -1,5 +1,8 @@
+import asyncio
 import math
 from datetime import datetime, timezone
+
+import pytest
 
 from opentools.chain.config import ChainConfig
 from opentools.chain.extractors.pipeline import ExtractionPipeline
@@ -83,7 +86,7 @@ def test_path_result_construction():
 # ─── GraphCache ────────────────────────────────────────────────────────
 
 
-def _build_linked_engagement(engagement_store, chain_store, n_findings: int = 3):
+async def _build_linked_engagement(engagement_store, chain_store, n_findings: int = 3):
     """Seed an engagement with n findings sharing host 10.0.0.5 and run the linker."""
     now = datetime.now(timezone.utc)
     findings = []
@@ -100,57 +103,115 @@ def _build_linked_engagement(engagement_store, chain_store, n_findings: int = 3)
     cfg = ChainConfig()
     pipeline = ExtractionPipeline(store=chain_store, config=cfg)
     for f in findings:
-        pipeline.extract_for_finding(f)
+        await pipeline.extract_for_finding(f)
 
-    engine = LinkerEngine(store=chain_store, config=cfg, rules=get_default_rules(cfg))
-    ctx = engine.make_context(user_id=None)
+    engine = LinkerEngine(
+        store=chain_store, config=cfg, rules=get_default_rules(cfg),
+    )
+    ctx = await engine.make_context(user_id=None)
     for f in findings:
-        engine.link_finding(f.id, user_id=None, context=ctx)
+        await engine.link_finding(f.id, user_id=None, context=ctx)
     return findings
 
 
-def test_graph_cache_build_master_graph(engagement_store_and_chain):
+@pytest.mark.asyncio
+async def test_graph_cache_build_master_graph(engagement_store_and_chain):
     engagement_store, chain_store, _ = engagement_store_and_chain
-    findings = _build_linked_engagement(engagement_store, chain_store, n_findings=3)
+    findings = await _build_linked_engagement(
+        engagement_store, chain_store, n_findings=3,
+    )
 
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None, include_candidates=False, include_rejected=False)
+    master = await cache.get_master_graph(
+        user_id=None, include_candidates=False, include_rejected=False,
+    )
 
     assert isinstance(master, MasterGraph)
     assert master.graph.num_nodes() == 3
     assert master.graph.num_edges() >= 2  # fully connected triangle = 3 edges directed
 
 
-def test_graph_cache_hit_returns_same_instance(engagement_store_and_chain):
+@pytest.mark.asyncio
+async def test_graph_cache_hit_returns_same_instance(engagement_store_and_chain):
     engagement_store, chain_store, _ = engagement_store_and_chain
-    _build_linked_engagement(engagement_store, chain_store)
+    await _build_linked_engagement(engagement_store, chain_store)
 
     cache = GraphCache(store=chain_store, maxsize=4)
-    a = cache.get_master_graph(user_id=None, include_candidates=False, include_rejected=False)
-    b = cache.get_master_graph(user_id=None, include_candidates=False, include_rejected=False)
+    a = await cache.get_master_graph(
+        user_id=None, include_candidates=False, include_rejected=False,
+    )
+    b = await cache.get_master_graph(
+        user_id=None, include_candidates=False, include_rejected=False,
+    )
     assert a is b
 
 
-def test_graph_cache_invalidation(engagement_store_and_chain):
+@pytest.mark.asyncio
+async def test_graph_cache_invalidation(engagement_store_and_chain):
     engagement_store, chain_store, _ = engagement_store_and_chain
-    _build_linked_engagement(engagement_store, chain_store)
+    await _build_linked_engagement(engagement_store, chain_store)
 
     cache = GraphCache(store=chain_store, maxsize=4)
-    a = cache.get_master_graph(user_id=None, include_candidates=False, include_rejected=False)
+    a = await cache.get_master_graph(
+        user_id=None, include_candidates=False, include_rejected=False,
+    )
     cache.invalidate(user_id=None)
-    b = cache.get_master_graph(user_id=None, include_candidates=False, include_rejected=False)
+    b = await cache.get_master_graph(
+        user_id=None, include_candidates=False, include_rejected=False,
+    )
     assert a is not b
 
 
-def test_graph_cache_subgraph_method(engagement_store_and_chain):
+@pytest.mark.asyncio
+async def test_graph_cache_subgraph_method(engagement_store_and_chain):
     engagement_store, chain_store, _ = engagement_store_and_chain
-    findings = _build_linked_engagement(engagement_store, chain_store, n_findings=3)
+    findings = await _build_linked_engagement(
+        engagement_store, chain_store, n_findings=3,
+    )
 
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None, include_candidates=False, include_rejected=False)
+    master = await cache.get_master_graph(
+        user_id=None, include_candidates=False, include_rejected=False,
+    )
 
     # Project to just 2 of the 3 findings
     target_ids = {findings[0].id, findings[1].id}
     target_indices = [master.node_map[fid] for fid in target_ids]
     sub = cache.subgraph(master, target_indices)
     assert sub.num_nodes() == 2
+
+
+@pytest.mark.asyncio
+async def test_graph_cache_concurrent_build_collapses_to_one(engagement_store_and_chain):
+    """Spec G4: concurrent callers for the same cache key must collapse to
+    a single ``_build_master_graph`` invocation via the per-key
+    ``asyncio.Lock``.
+    """
+    engagement_store, chain_store, _ = engagement_store_and_chain
+    await _build_linked_engagement(
+        engagement_store, chain_store, n_findings=2,
+    )
+
+    cache = GraphCache(store=chain_store, maxsize=4)
+
+    build_count = 0
+    original_build = cache._build_master_graph
+
+    async def counting_build(*args, **kwargs):
+        nonlocal build_count
+        build_count += 1
+        # Yield to the event loop so racing callers can all enter
+        # get_master_graph before the first builder finishes.
+        await asyncio.sleep(0)
+        return await original_build(*args, **kwargs)
+
+    cache._build_master_graph = counting_build  # type: ignore[assignment]
+
+    results = await asyncio.gather(*[
+        cache.get_master_graph(user_id=None) for _ in range(10)
+    ])
+
+    # Exactly one build across 10 racing callers.
+    assert build_count == 1
+    # All callers observe the same cached MasterGraph instance.
+    assert all(r is results[0] for r in results)

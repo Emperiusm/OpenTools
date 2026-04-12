@@ -104,10 +104,10 @@ def _row_to_relation(row: aiosqlite.Row) -> FindingRelation:
 def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
     """Convert an aiosqlite.Row from linker_run to a LinkerRun model.
 
-    Note: migration v3 does not include a status_text column, and the
-    LinkerRun pydantic model does not have a ``status`` field today.
-    Task 18 introduces migration v4 to add persisted status text; until
-    then, in-memory tracking is kept separately on AsyncChainStore.
+    Migration v4 added the ``status_text`` column, which is surfaced on
+    the ``LinkerRun.status`` field. Legacy rows (pre-v4) are backfilled
+    to 'done'/'failed'/'unknown' during migration; any row that is still
+    NULL here falls back to 'pending'.
     """
     import orjson
 
@@ -118,6 +118,13 @@ def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
             rule_stats = orjson.loads(raw)
         except Exception:
             rule_stats = {}
+
+    # status_text exists after migration v4; guard against test fixtures
+    # that might exercise an older schema by using dict-style get.
+    try:
+        status_text = row["status_text"]
+    except (IndexError, KeyError):
+        status_text = None
 
     return LinkerRun(
         id=row["id"],
@@ -144,6 +151,7 @@ def _row_to_linker_run(row: aiosqlite.Row) -> LinkerRun:
         rule_stats=rule_stats,
         duration_ms=row["duration_ms"],
         error=row["error"],
+        status=status_text or "pending",
         generation=row["generation"],
         user_id=row["user_id"],
     )
@@ -193,11 +201,6 @@ class AsyncChainStore:
         self._initialized = False
         # Transaction depth tracker for nested savepoints
         self._txn_depth = 0
-        # In-memory linker run status tracking. The v3 linker_run schema
-        # has no status column yet — Task 18's migration v4 will add
-        # ``status_text``. Until then, set_run_status writes here so that
-        # behavior is observable within a single process/session.
-        self._run_status: dict[str, str] = {}
 
     async def initialize(self) -> None:
         """Open the connection (if owning), apply pragmas, run migrations.
@@ -530,6 +533,45 @@ class AsyncChainStore:
         ) as cur:
             rows = await cur.fetchall()
         return [(row["id"], row["engagement_id"]) for row in rows]
+
+    @require_initialized
+    async def fetch_finding_ids_for_entity(
+        self, entity_id: str, *, user_id
+    ) -> list[str]:
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT m.finding_id
+            FROM entity_mention m
+            JOIN findings f ON f.id = m.finding_id
+            WHERE m.entity_id = ? AND f.deleted_at IS NULL
+            """,
+            (entity_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [row["finding_id"] for row in rows]
+
+    @require_initialized
+    async def fetch_entity_mentions_for_engagement(
+        self,
+        engagement_id: str,
+        *,
+        entity_type: str,
+        user_id,
+    ) -> list[tuple[str, str]]:
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT m.finding_id, e.canonical_value
+            FROM entity_mention m
+            JOIN entity e ON e.id = m.entity_id
+            JOIN findings f ON f.id = m.finding_id
+            WHERE e.type = ?
+              AND f.engagement_id = ?
+              AND f.deleted_at IS NULL
+            """,
+            (entity_type, engagement_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(row["finding_id"], row["canonical_value"]) for row in rows]
 
     # ─── Relation CRUD ───────────────────────────────────────────────────
 
@@ -887,10 +929,10 @@ class AsyncChainStore:
                 entities_extracted, relations_created, relations_updated,
                 relations_skipped_sticky, extraction_cache_hits,
                 extraction_cache_misses, llm_calls_made, llm_cache_hits,
-                llm_cache_misses, generation
+                llm_cache_misses, status_text, generation
             )
             VALUES (
-                ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'pending',
                 (SELECT COALESCE(MAX(generation), 0) + 1 FROM linker_run)
             )
             """,
@@ -910,13 +952,18 @@ class AsyncChainStore:
     async def set_run_status(
         self, run_id: str, status: str, *, user_id
     ) -> None:
-        """Record a human-readable status string for a linker run.
+        """Persist a human-readable status string for a linker run.
 
-        v3 schema has no column to persist this; Task 18 adds
-        ``status_text`` via migration v4. Until then, stash the value in
-        an in-memory dict so behavior is observable within a session.
+        Writes to the ``linker_run.status_text`` column added by
+        migration v4. The CLI backend is single-user so user_id is
+        accepted but ignored for the WHERE clause.
         """
-        self._run_status[run_id] = status
+        await self._conn.execute(
+            "UPDATE linker_run SET status_text = ? WHERE id = ?",
+            (status, run_id),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
 
     @require_initialized
     async def finish_linker_run(
@@ -965,6 +1012,33 @@ class AsyncChainStore:
                 error,
                 run_id,
             ),
+        )
+        if self._txn_depth == 0:
+            await self._conn.commit()
+
+    @require_initialized
+    async def mark_run_failed(
+        self, run_id: str, *, error: str, user_id
+    ) -> None:
+        """Mark a linker run as failed in a single UPDATE.
+
+        Writes status_text='failed', error, finished_at=<now>. This is
+        the worker failure-path finalize — finish_linker_run assumes a
+        clean success with full counters, so we skip it here. The CLI
+        backend is single-user so user_id is accepted but ignored for
+        the WHERE clause (matches set_run_status).
+        """
+        from datetime import datetime as _dt, timezone as _tz
+
+        await self._conn.execute(
+            """
+            UPDATE linker_run
+            SET status_text = ?,
+                error = ?,
+                finished_at = ?
+            WHERE id = ?
+            """,
+            ("failed", error, _dt.now(_tz.utc).isoformat(), run_id),
         )
         if self._txn_depth == 0:
             await self._conn.commit()
@@ -1049,19 +1123,22 @@ class AsyncChainStore:
 
     # ─── LLM caches ──────────────────────────────────────────────────────
     #
-    # user_id is accepted for interface compatibility with the protocol but
-    # is NOT yet enforced in SQL — the v3 cache tables have no user_id
-    # column. Task 18's migration v4 adds the column and these methods
-    # will then filter / populate it. Until then all rows are globally
-    # shared (matching historical CLI single-user behaviour).
+    # Cache rows are user-scoped (spec G37) to prevent cross-user side
+    # channel leaks. Migration v4 added the user_id column to both
+    # extraction_cache and llm_link_cache. The filter pattern
+    # ``(user_id IS ? OR user_id = ?)`` works in SQLite: when the
+    # placeholder is bound to None, ``IS NULL`` matches NULL rows; when
+    # bound to a string, ``= ?`` matches that exact user.
 
     @require_initialized
     async def get_extraction_cache(
         self, cache_key: str, *, user_id
     ) -> bytes | None:
+        uid = str(user_id) if user_id else None
         async with self._conn.execute(
-            "SELECT result_json FROM extraction_cache WHERE cache_key = ?",
-            (cache_key,),
+            "SELECT result_json FROM extraction_cache "
+            "WHERE cache_key = ? AND (user_id IS ? OR user_id = ?)",
+            (cache_key, uid, uid),
         ) as cursor:
             row = await cursor.fetchone()
         return bytes(row["result_json"]) if row else None
@@ -1079,17 +1156,19 @@ class AsyncChainStore:
     ) -> None:
         from datetime import datetime as _dt, timezone as _tz
 
+        uid = str(user_id) if user_id else None
         await self._conn.execute(
             """
             INSERT INTO extraction_cache
                 (cache_key, provider, model, schema_version, result_json,
-                 created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 provider = excluded.provider,
                 model = excluded.model,
                 schema_version = excluded.schema_version,
-                result_json = excluded.result_json
+                result_json = excluded.result_json,
+                user_id = excluded.user_id
             """,
             (
                 cache_key,
@@ -1098,6 +1177,7 @@ class AsyncChainStore:
                 schema_version,
                 result_json,
                 _dt.now(_tz.utc).isoformat(),
+                uid,
             ),
         )
         if self._txn_depth == 0:
@@ -1107,10 +1187,11 @@ class AsyncChainStore:
     async def get_llm_link_cache(
         self, cache_key: str, *, user_id
     ) -> bytes | None:
+        uid = str(user_id) if user_id else None
         async with self._conn.execute(
             "SELECT classification_json FROM llm_link_cache "
-            "WHERE cache_key = ?",
-            (cache_key,),
+            "WHERE cache_key = ? AND (user_id IS ? OR user_id = ?)",
+            (cache_key, uid, uid),
         ) as cursor:
             row = await cursor.fetchone()
         return bytes(row["classification_json"]) if row else None
@@ -1128,17 +1209,19 @@ class AsyncChainStore:
     ) -> None:
         from datetime import datetime as _dt, timezone as _tz
 
+        uid = str(user_id) if user_id else None
         await self._conn.execute(
             """
             INSERT INTO llm_link_cache
                 (cache_key, provider, model, schema_version,
-                 classification_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 classification_json, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 provider = excluded.provider,
                 model = excluded.model,
                 schema_version = excluded.schema_version,
-                classification_json = excluded.classification_json
+                classification_json = excluded.classification_json,
+                user_id = excluded.user_id
             """,
             (
                 cache_key,
@@ -1147,6 +1230,7 @@ class AsyncChainStore:
                 schema_version,
                 classification_json,
                 _dt.now(_tz.utc).isoformat(),
+                uid,
             ),
         )
         if self._txn_depth == 0:
@@ -1162,6 +1246,22 @@ class AsyncChainStore:
             "SELECT id FROM findings "
             "WHERE engagement_id = ? AND deleted_at IS NULL",
             (engagement_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [row["id"] for row in rows]
+
+    @require_initialized
+    async def fetch_all_finding_ids(self, *, user_id) -> list[str]:
+        """Return ids of all non-deleted findings across every engagement.
+
+        Used by the exporter's "all engagements" path. Kept as a
+        separate protocol method rather than overloading
+        ``fetch_findings_for_engagement`` with a None sentinel because
+        the Postgres backend's scoping semantics differ meaningfully
+        between "all findings" and "one engagement".
+        """
+        async with self._conn.execute(
+            "SELECT id FROM findings WHERE deleted_at IS NULL",
         ) as cursor:
             rows = await cursor.fetchall()
         return [row["id"] for row in rows]

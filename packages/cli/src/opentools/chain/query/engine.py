@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import rustworkx as rx
@@ -18,7 +19,9 @@ from opentools.chain.query.graph_cache import (
     PathResult,
 )
 from opentools.chain.query.yen import RawPath, yens_k_shortest
-from opentools.chain.store_extensions import ChainStore
+
+if TYPE_CHECKING:
+    from opentools.chain.store_protocol import ChainStoreProtocol
 
 
 # Sentinel payloads for virtual nodes
@@ -44,7 +47,7 @@ class ChainQueryEngine:
     def __init__(
         self,
         *,
-        store: ChainStore,
+        store: "ChainStoreProtocol",
         graph_cache: GraphCache,
         config: ChainConfig,
     ) -> None:
@@ -52,7 +55,7 @@ class ChainQueryEngine:
         self.graph_cache = graph_cache
         self.config = config
 
-    def k_shortest_paths(
+    async def k_shortest_paths(
         self,
         *,
         from_spec: EndpointSpec,
@@ -62,13 +65,13 @@ class ChainQueryEngine:
         max_hops: int = 6,
         include_candidates: bool = False,
     ) -> list[PathResult]:
-        master = self.graph_cache.get_master_graph(
+        master = await self.graph_cache.get_master_graph(
             user_id=user_id,
             include_candidates=include_candidates,
             include_rejected=False,
         )
-        source_set = resolve_endpoint(from_spec, master, self.store)
-        target_set = resolve_endpoint(to_spec, master, self.store)
+        source_set = await resolve_endpoint(from_spec, master, self.store)
+        target_set = await resolve_endpoint(to_spec, master, self.store)
 
         if not source_set or not target_set:
             return []

@@ -1,13 +1,15 @@
-import asyncio
 from datetime import datetime, timezone
+
+import pytest
 
 from opentools.chain.extractors.pipeline import (
     ExtractionPipeline,
     ExtractionResult,
 )
 from opentools.chain.config import ChainConfig
-from opentools.chain.store_extensions import ChainStore
 from opentools.models import Finding, FindingStatus, Severity
+
+pytestmark = pytest.mark.asyncio
 
 
 def _finding(**kwargs) -> Finding:
@@ -23,66 +25,63 @@ def _finding(**kwargs) -> Finding:
 
 
 def _insert_finding(engagement_store, finding: Finding):
-    """Insert directly into findings table, bypassing dedup, for test isolation.
-
-    Adjust if the test reveals that add_finding works fine for these inputs.
-    """
+    """Insert directly into findings table, bypassing dedup, for test isolation."""
     engagement_store.add_finding(finding)
 
 
-def test_pipeline_extracts_ip_and_cve(engagement_store_and_chain):
+async def test_pipeline_extracts_ip_and_cve(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    result = pipeline.extract_for_finding(finding)
+    result = await pipeline.extract_for_finding(finding)
 
     assert isinstance(result, ExtractionResult)
     assert result.cache_hit is False
     assert result.stage2_count >= 2  # at least ip + cve
 
-    mentions = chain_store.mentions_for_finding(finding.id)
+    mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     mention_values = {m.raw_value for m in mentions}
     assert "10.0.0.5" in mention_values
     assert any("CVE-2024-1234" in v or "cve-2024-1234" in v for v in mention_values)
 
 
-def test_pipeline_cache_hit_on_second_run(engagement_store_and_chain):
+async def test_pipeline_cache_hit_on_second_run(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    first = pipeline.extract_for_finding(finding)
-    second = pipeline.extract_for_finding(finding)
+    first = await pipeline.extract_for_finding(finding)
+    second = await pipeline.extract_for_finding(finding)
 
     assert first.cache_hit is False
     assert second.cache_hit is True
     # Second run doesn't delete/reinsert mentions
-    mentions_after = chain_store.mentions_for_finding(finding.id)
+    mentions_after = await chain_store.mentions_for_finding(finding.id, user_id=None)
     assert len(mentions_after) == first.mentions_created
 
 
-def test_pipeline_force_bypasses_cache(engagement_store_and_chain):
+async def test_pipeline_force_bypasses_cache(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(finding)
-    result = pipeline.extract_for_finding(finding, force=True)
+    await pipeline.extract_for_finding(finding)
+    result = await pipeline.extract_for_finding(finding, force=True)
     assert result.cache_hit is False
 
 
-def test_pipeline_update_replaces_mentions(engagement_store_and_chain):
+async def test_pipeline_update_replaces_mentions(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(finding)
-    first_mentions = chain_store.mentions_for_finding(finding.id)
+    await pipeline.extract_for_finding(finding)
+    first_mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     assert any("10.0.0.5" in m.raw_value for m in first_mentions)
 
     # Simulate edit by constructing a new Finding with different content
@@ -90,32 +89,31 @@ def test_pipeline_update_replaces_mentions(engagement_store_and_chain):
     updated = finding.model_copy(update={
         "description": "Completely different content with 192.168.1.10 and CVE-2023-5678",
     })
-    result = pipeline.extract_for_finding(updated)
+    result = await pipeline.extract_for_finding(updated)
     assert result.cache_hit is False
 
-    second_mentions = chain_store.mentions_for_finding(finding.id)
+    second_mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     second_values = {m.raw_value for m in second_mentions}
     assert "10.0.0.5" not in second_values
     assert "192.168.1.10" in second_values
 
 
-def test_pipeline_llm_stage_not_run_without_provider(engagement_store_and_chain):
+async def test_pipeline_llm_stage_not_run_without_provider(engagement_store_and_chain):
     """llm_provider=None must never invoke an LLM stage."""
     engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    result = pipeline.extract_for_finding(finding, llm_provider=None)
+    result = await pipeline.extract_for_finding(finding, llm_provider=None)
     assert result.stage3_count == 0
 
 
-def test_pipeline_llm_stage_runs_when_provided(engagement_store_and_chain):
+async def test_pipeline_llm_stage_runs_when_provided(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding()
     _insert_finding(engagement_store, finding)
 
-    # Mock provider that returns a single entity via call_fn
     from opentools.chain.extractors.llm.ollama import OllamaProvider
 
     async def mock_call(prompt):
@@ -124,31 +122,31 @@ def test_pipeline_llm_stage_runs_when_provided(engagement_store_and_chain):
     provider = OllamaProvider(call_fn=mock_call)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    result = pipeline.extract_for_finding(finding, llm_provider=provider)
+    result = await pipeline.extract_for_finding(finding, llm_provider=provider)
     assert result.stage3_count >= 1
-    mentions = chain_store.mentions_for_finding(finding.id)
+    mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     assert any("ctf_admin" in m.raw_value for m in mentions)
 
 
-def test_pipeline_normalizes_entity_values(engagement_store_and_chain):
+async def test_pipeline_normalizes_entity_values(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
     finding = _finding(description="connect via SSH to 10.0.0.5 and cve-2024-1234")
     _insert_finding(engagement_store, finding)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(finding)
+    await pipeline.extract_for_finding(finding)
 
     # CVE should be normalized to uppercase in the Entity table
-    mentions = chain_store.mentions_for_finding(finding.id)
+    mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     cve_mentions = [m for m in mentions if "cve" in m.raw_value.lower()]
     assert cve_mentions
     cve_mention = cve_mentions[0]
-    entity = chain_store.get_entity(cve_mention.entity_id)
+    entity = await chain_store.get_entity(cve_mention.entity_id, user_id=None)
     assert entity is not None
     assert entity.canonical_value == "CVE-2024-1234"  # normalized
 
 
-def test_mention_count_matches_ground_truth_after_force_rerun(engagement_store_and_chain):
+async def test_mention_count_matches_ground_truth_after_force_rerun(engagement_store_and_chain):
     """Regression: force re-extraction must not double-count mentions.
 
     Before the fix, mention_count would drift upward on every re-extraction
@@ -160,25 +158,27 @@ def test_mention_count_matches_ground_truth_after_force_rerun(engagement_store_a
     _insert_finding(engagement_store, finding)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(finding)
-    pipeline.extract_for_finding(finding, force=True)
-    pipeline.extract_for_finding(finding, force=True)
+    await pipeline.extract_for_finding(finding)
+    await pipeline.extract_for_finding(finding, force=True)
+    await pipeline.extract_for_finding(finding, force=True)
 
-    # Check that every entity's mention_count matches the actual number of rows
-    rows = chain_store.execute_all("SELECT id, mention_count FROM entity")
-    for row in rows:
-        entity_id = row["id"]
-        stored_count = row["mention_count"]
-        actual = chain_store.execute_one(
-            "SELECT COUNT(*) FROM entity_mention WHERE entity_id = ?",
-            (entity_id,),
+    # For every entity touched by this finding, mention_count must match
+    # the number of entity_mention rows that point at it.
+    mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
+    touched_ids = {m.entity_id for m in mentions}
+    for eid in touched_ids:
+        entity = await chain_store.get_entity(eid, user_id=None)
+        assert entity is not None
+        actual = sum(1 for m in mentions if m.entity_id == eid)
+        # mention_count reflects ALL mentions across all findings, but in
+        # this single-finding test the two should agree.
+        assert entity.mention_count == actual, (
+            f"entity {eid}: mention_count={entity.mention_count} but "
+            f"{actual} mention rows exist"
         )
-        assert stored_count == actual[0], (
-            f"entity {entity_id}: mention_count={stored_count} but {actual[0]} mention rows exist"
-        )
 
 
-def test_mention_count_accurate_across_findings(engagement_store_and_chain):
+async def test_mention_count_accurate_across_findings(engagement_store_and_chain):
     """Entity shared between two findings has mention_count = 2.
 
     After re-extracting one of the findings, mention_count must still be 2.
@@ -190,61 +190,49 @@ def test_mention_count_accurate_across_findings(engagement_store_and_chain):
     _insert_finding(engagement_store, finding_b)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(finding_a)
-    pipeline.extract_for_finding(finding_b)
+    await pipeline.extract_for_finding(finding_a)
+    await pipeline.extract_for_finding(finding_b)
 
-    # Find the ip entity
-    ip_row = chain_store.execute_one(
-        "SELECT id, mention_count FROM entity WHERE type = 'ip' AND canonical_value = '10.0.0.5'",
-    )
-    assert ip_row is not None
-    assert ip_row["mention_count"] == 2
+    # Locate the ip entity via list_entities
+    ip_entities = [
+        e for e in await chain_store.list_entities(user_id=None, entity_type="ip")
+        if e.canonical_value == "10.0.0.5"
+    ]
+    assert len(ip_entities) == 1
+    assert ip_entities[0].mention_count == 2
 
     # Re-extract finding_a with force
-    pipeline.extract_for_finding(finding_a, force=True)
-    ip_row = chain_store.execute_one(
-        "SELECT id, mention_count FROM entity WHERE type = 'ip' AND canonical_value = '10.0.0.5'",
+    await pipeline.extract_for_finding(finding_a, force=True)
+    ip_entities = [
+        e for e in await chain_store.list_entities(user_id=None, entity_type="ip")
+        if e.canonical_value == "10.0.0.5"
+    ]
+    assert ip_entities[0].mention_count == 2, (
+        f"after re-extraction, mention_count should still be 2, "
+        f"got {ip_entities[0].mention_count}"
     )
-    assert ip_row["mention_count"] == 2, (
-        f"after re-extraction, mention_count should still be 2, got {ip_row['mention_count']}"
-    )
 
 
-def test_extract_for_finding_async_matches_sync(engagement_store_and_chain):
-    """The async variant must produce the same result as the sync variant."""
-    engagement_store, chain_store, now = engagement_store_and_chain
-    finding = _finding(description="SSH on 10.0.0.5 and CVE-2024-1234 applies")
-    _insert_finding(engagement_store, finding)
-
-    pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    async_result = asyncio.run(pipeline.extract_for_finding_async(finding))
-
-    assert async_result.cache_hit is False
-    assert async_result.stage2_count >= 2  # ip + cve at minimum
-
-    mentions = chain_store.mentions_for_finding(finding.id)
-    mention_values = {m.raw_value for m in mentions}
-    assert "10.0.0.5" in mention_values
-
-
-def test_extract_for_finding_async_llm_stage_awaited(engagement_store_and_chain):
-    """Stage 3 must work via direct await, not asyncio.run."""
-    engagement_store, chain_store, now = engagement_store_and_chain
+async def test_async_pipeline_awaits_llm_provider(engagement_store_and_chain):
+    """LLM stage 3 is awaited natively rather than running asyncio.run in sync code."""
+    engagement_store, chain_store, _ = engagement_store_and_chain
     finding = _finding(description="SSH on 10.0.0.5")
     _insert_finding(engagement_store, finding)
 
     from opentools.chain.extractors.llm.ollama import OllamaProvider
 
+    calls: list[str] = []
+
     async def mock_call(prompt):
+        calls.append(prompt)
         return '{"entities": [{"type": "user", "value": "ctf_admin", "confidence": 0.85}]}'
 
     provider = OllamaProvider(call_fn=mock_call)
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
+    result = await pipeline.extract_for_finding(finding, llm_provider=provider)
 
-    async def _run():
-        return await pipeline.extract_for_finding_async(finding, llm_provider=provider)
-
-    result = asyncio.run(_run())
+    assert isinstance(result, ExtractionResult)
     assert result.stage3_count >= 1
-    mentions = chain_store.mentions_for_finding(finding.id)
+    assert len(calls) >= 1  # LLM stage invoked at least once
+    mentions = await chain_store.mentions_for_finding(finding.id, user_id=None)
     assert any("ctf_admin" in m.raw_value for m in mentions)

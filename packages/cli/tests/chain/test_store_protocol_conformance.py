@@ -37,9 +37,42 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@pytest_asyncio.fixture(params=["sqlite_async"])
+def _ensure_web_backend_on_path() -> None:
+    """Make sure the worktree's web backend is importable.
+
+    The root pyproject already puts ``packages/web/backend`` on
+    ``sys.path``, but we defend against test invocations from inside
+    ``packages/cli`` by falling back to an explicit insert. Loading
+    ``app.models`` before calling this is safe — the function is a
+    no-op when the module is already cached.
+    """
+    import sys
+    import pathlib
+
+    # Walk upward from this file to the repo root (contains
+    # ``packages/web/backend``). Stop at filesystem root.
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "packages" / "web" / "backend"
+        if candidate.is_dir():
+            candidate_str = str(candidate)
+            if candidate_str not in sys.path:
+                sys.path.insert(0, candidate_str)
+            return
+
+
+@pytest_asyncio.fixture(params=["sqlite_async", "postgres_async"])
 async def conformant_store(request, tmp_path):
-    """Yield (store, user_id) for the parameterized backend."""
+    """Yield (store, user_id) for the parameterized backend.
+
+    The sqlite_async path uses the CLI's single-user aiosqlite store
+    and yields ``user_id=None`` (CLI semantics). The postgres_async
+    path uses PostgresChainStore against a ``sqlite+aiosqlite://`` ORM
+    session — this catches dialect-independent ORM bugs even without
+    a running Postgres container. Real Postgres coverage is gated on
+    the WEB_TEST_DB_URL env var in a separate suite (not activated
+    here).
+    """
     if request.param == "sqlite_async":
         from opentools.chain.stores.sqlite_async import AsyncChainStore
         store = AsyncChainStore(db_path=tmp_path / f"{request.param}.db")
@@ -48,8 +81,132 @@ async def conformant_store(request, tmp_path):
             yield store, None
         finally:
             await store.close()
-    else:
-        pytest.skip(f"backend {request.param} not available in this phase")
+        return
+
+    if request.param == "postgres_async":
+        import os
+        import uuid as _uuid
+
+        _ensure_web_backend_on_path()
+
+        try:
+            import app.models as web_models  # type: ignore[import-not-found]
+        except Exception as exc:  # pragma: no cover
+            pytest.skip(f"web backend models unavailable: {exc}")
+
+        # Verify that the loaded app.models has the chain cache tables
+        # this test needs. If it does not (stale editable install from
+        # a different worktree), skip rather than silently testing the
+        # wrong schema.
+        if not hasattr(web_models, "ChainExtractionCache"):
+            pytest.skip(
+                "loaded app.models is missing ChainExtractionCache — "
+                "likely a stale editable install; run 'pip install -e "
+                "packages/web/backend' from the worktree to refresh"
+            )
+
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from opentools.chain.stores.postgres_async import PostgresChainStore
+
+        real_pg_url = os.environ.get("WEB_TEST_DB_URL")
+        if real_pg_url:
+            # Real Postgres path (CI-only): schema is pre-migrated via
+            # alembic upgrade head before pytest runs. Per-test isolation
+            # is provided by a fresh random user_id — every protocol
+            # method is scoped by user_id, and the teardown block below
+            # deletes all rows for this test's user.
+            engine = create_async_engine(real_pg_url, echo=False)
+        else:
+            # Default path: in-process sqlite+aiosqlite via SQLAlchemy.
+            # Catches ORM/dialect bugs without a running Postgres.
+            db_file = tmp_path / "postgres_conf.db"
+            engine = create_async_engine(
+                f"sqlite+aiosqlite:///{db_file}", echo=False
+            )
+            async with engine.begin() as conn:
+                await conn.run_sync(web_models.SQLModel.metadata.create_all)
+
+        Session = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        session = Session()
+
+        # Seed a user row so foreign keys that reference user.id hold.
+        user_id = _uuid.uuid4()
+        session.add(
+            web_models.User(
+                id=user_id,
+                email=f"u_{user_id.hex[:8]}@example.com",
+                hashed_password="x",
+            )
+        )
+        await session.commit()
+
+        store = PostgresChainStore(session=session)
+        await store.initialize()
+        try:
+            yield store, user_id
+        finally:
+            try:
+                await store.close()
+            finally:
+                try:
+                    await session.rollback()
+                finally:
+                    # For real Postgres, purge every row scoped to this
+                    # test's user_id so the shared database does not
+                    # accumulate state between tests. For sqlite+aiosqlite
+                    # the engine is disposed and the temp file is gone,
+                    # so the cleanup is a no-op but still safe.
+                    if real_pg_url:
+                        try:
+                            cleanup = Session()
+                            try:
+                                from sqlalchemy import delete
+                                # Order matters: child tables first so
+                                # FK dependents are removed before their
+                                # parents. Finding / Engagement come last
+                                # because chain_entity_mention /
+                                # chain_finding_relation / ChainLinkerRun
+                                # reference them.
+                                for model_name in (
+                                    "ChainFindingParserOutput",
+                                    "ChainFindingExtractionState",
+                                    "ChainLlmLinkCache",
+                                    "ChainExtractionCache",
+                                    "ChainLinkerRun",
+                                    "ChainFindingRelation",
+                                    "ChainEntityMention",
+                                    "ChainEntity",
+                                    "Finding",
+                                    "Engagement",
+                                ):
+                                    model = getattr(web_models, model_name, None)
+                                    if model is None or not hasattr(model, "user_id"):
+                                        continue
+                                    await cleanup.execute(
+                                        delete(model).where(model.user_id == user_id)
+                                    )
+                                await cleanup.execute(
+                                    delete(web_models.User).where(
+                                        web_models.User.id == user_id
+                                    )
+                                )
+                                await cleanup.commit()
+                            finally:
+                                await cleanup.close()
+                        except Exception:  # pragma: no cover
+                            pass
+                    await session.close()
+                    await engine.dispose()
+        return
+
+    pytest.skip(f"backend {request.param} not available in this phase")
 
 
 # --- Lifecycle ---
@@ -243,21 +400,65 @@ async def test_current_linker_generation_monotone(conformant_store):
 # --- Extraction state ---
 
 
+async def _seed_finding_row(store, *, finding_id: str, user_id):
+    """Insert a minimal engagement + finding row for FK holds.
+
+    Dispatches on backend: AsyncChainStore (has ``_conn``) uses raw
+    SQLite DML; PostgresChainStore uses the ORM session. The rows are
+    the minimum needed to satisfy chain_finding_extraction_state /
+    chain_finding_parser_output foreign keys.
+    """
+    if hasattr(store, "_conn"):
+        # AsyncChainStore — single-user CLI, no user_id on engagement/findings rows.
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO engagements "
+            "(id, name, target, type, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("eng_conf", "c", "t", "assess", _now().isoformat(), _now().isoformat()),
+        )
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO findings "
+            "(id, engagement_id, tool, severity, title, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (finding_id, "eng_conf", "test", "high", "t", _now().isoformat()),
+        )
+        await store._conn.commit()
+        return
+
+    # PostgresChainStore — web SQLModel tables, user-scoped.
+    import app.models as m  # type: ignore[import-not-found]
+
+    session = store._session
+    assert session is not None
+    session.add(
+        m.Engagement(
+            id="eng_conf",
+            user_id=user_id,
+            name="c",
+            target="t",
+            type="assess",
+            created_at=_now(),
+            updated_at=_now(),
+        )
+    )
+    session.add(
+        m.Finding(
+            id=finding_id,
+            user_id=user_id,
+            engagement_id="eng_conf",
+            tool="test",
+            severity="high",
+            title="t",
+            created_at=_now(),
+        )
+    )
+    await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_upsert_and_get_extraction_hash(conformant_store):
     store, user_id = conformant_store
-    # Seed a finding row so the FK holds
-    await store._conn.execute(
-        "INSERT OR IGNORE INTO engagements (id, name, target, type, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        ("eng_conf", "c", "t", "assess", _now().isoformat(), _now().isoformat()),
-    )
-    await store._conn.execute(
-        "INSERT OR IGNORE INTO findings (id, engagement_id, tool, severity, title, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        ("fnd_conf", "eng_conf", "test", "high", "t", _now().isoformat()),
-    )
-    await store._conn.commit()
+    await _seed_finding_row(store, finding_id="fnd_conf", user_id=user_id)
 
     await store.upsert_extraction_state(
         finding_id="fnd_conf",
@@ -267,6 +468,97 @@ async def test_upsert_and_get_extraction_hash(conformant_store):
     )
     got = await store.get_extraction_hash("fnd_conf", user_id=user_id)
     assert got == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_mark_run_failed_sets_status_and_error(conformant_store):
+    """mark_run_failed finalizes a run row with status='failed' and the
+    error message, matching the worker failure path used by
+    chain_rebuild_worker.run_rebuild_shared."""
+    store, user_id = conformant_store
+
+    run = await store.start_linker_run(
+        scope=LinkerScope.ENGAGEMENT,
+        scope_id="eng_mark_failed",
+        mode=LinkerMode.RULES_ONLY,
+        user_id=user_id,
+    )
+
+    await store.mark_run_failed(
+        run.id, error="boom: db exploded", user_id=user_id,
+    )
+
+    runs = await store.fetch_linker_runs(user_id=user_id, limit=10)
+    got = next((r for r in runs if r.id == run.id), None)
+    assert got is not None
+    assert got.status == "failed"
+    assert got.error == "boom: db exploded"
+    assert got.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_fetch_finding_ids_for_entity_distinct(conformant_store):
+    """fetch_finding_ids_for_entity returns distinct finding ids even
+    when the same entity is mentioned multiple times in one finding —
+    this is what entity_ops.merge_entities relies on to populate
+    MergeResult.affected_findings."""
+    store, user_id = conformant_store
+    await _seed_finding_row(store, finding_id="fnd_conf", user_id=user_id)
+    # Second finding so we can assert distinctness across findings too.
+    if hasattr(store, "_conn"):
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO findings "
+            "(id, engagement_id, tool, severity, title, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("fnd_conf_2", "eng_conf", "test", "high", "t2", _now().isoformat()),
+        )
+        await store._conn.commit()
+    else:
+        import app.models as m  # type: ignore[import-not-found]
+        session = store._session
+        assert session is not None
+        session.add(
+            m.Finding(
+                id="fnd_conf_2",
+                user_id=user_id,
+                engagement_id="eng_conf",
+                tool="test",
+                severity="high",
+                title="t2",
+                created_at=_now(),
+            )
+        )
+        await session.commit()
+
+    entity_id = entity_id_for("host", "10.0.0.77")
+    await store.upsert_entity(
+        Entity(
+            id=entity_id, type="host", canonical_value="10.0.0.77",
+            first_seen_at=_now(), last_seen_at=_now(),
+            mention_count=0,
+        ),
+        user_id=user_id,
+    )
+
+    # Three mentions: two in fnd_conf (duplicate finding_id), one in fnd_conf_2.
+    mentions = [
+        EntityMention(
+            id=f"mnt_ffe_{i}",
+            entity_id=entity_id,
+            finding_id=fid,
+            field=MentionField.DESCRIPTION,
+            raw_value="10.0.0.77",
+            extractor="ioc",
+            confidence=0.9,
+            created_at=_now(),
+        )
+        for i, fid in enumerate(["fnd_conf", "fnd_conf", "fnd_conf_2"])
+    ]
+    await store.add_mentions_bulk(mentions, user_id=user_id)
+
+    ids = await store.fetch_finding_ids_for_entity(entity_id, user_id=user_id)
+    # Distinct, sorted for determinism.
+    assert sorted(ids) == ["fnd_conf", "fnd_conf_2"]
 
 
 # --- LLM caches ---

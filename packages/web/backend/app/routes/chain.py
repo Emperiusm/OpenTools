@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import async_session_factory
 from app.dependencies import get_db, get_current_user, chain_task_registry_dep
 from app.models import User
-from app.services import chain_rebuild
+from app.services.chain_rebuild_worker import run_rebuild_shared
 from app.services.chain_service import (
     ChainPathResultDTO,
     ChainQueryPathRequest,
@@ -101,12 +101,12 @@ async def list_entities(
     )
     return [
         EntityResponse(
-            id=e.id,
-            type=e.type,
-            canonical_value=e.canonical_value,
-            mention_count=e.mention_count,
-            first_seen_at=e.first_seen_at,
-            last_seen_at=e.last_seen_at,
+            id=e["id"],
+            type=e["type"],
+            canonical_value=e["canonical_value"],
+            mention_count=e["mention_count"],
+            first_seen_at=e["first_seen_at"],
+            last_seen_at=e["last_seen_at"],
         )
         for e in entities
     ]
@@ -123,12 +123,12 @@ async def get_entity(
     if entity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="entity not found")
     return EntityResponse(
-        id=entity.id,
-        type=entity.type,
-        canonical_value=entity.canonical_value,
-        mention_count=entity.mention_count,
-        first_seen_at=entity.first_seen_at,
-        last_seen_at=entity.last_seen_at,
+        id=entity["id"],
+        type=entity["type"],
+        canonical_value=entity["canonical_value"],
+        mention_count=entity["mention_count"],
+        first_seen_at=entity["first_seen_at"],
+        last_seen_at=entity["last_seen_at"],
     )
 
 
@@ -144,12 +144,12 @@ async def relations_for_finding(
     )
     return [
         RelationResponse(
-            id=r.id,
-            source_finding_id=r.source_finding_id,
-            target_finding_id=r.target_finding_id,
-            weight=r.weight,
-            status=r.status,
-            symmetric=r.symmetric,
+            id=r["id"],
+            source_finding_id=r["source_finding_id"],
+            target_finding_id=r["target_finding_id"],
+            weight=r["weight"],
+            status=r["status"],
+            symmetric=r["symmetric"],
         )
         for r in relations
     ]
@@ -169,7 +169,7 @@ async def query_path(
         max_hops=request.max_hops,
         include_candidates=request.include_candidates,
     )
-    results = await service.k_shortest_paths_stub(db, user_id=user.id, request=req)
+    results = await service.k_shortest_paths(db, user_id=user.id, request=req)
     return PathResponse(
         paths=[
             {
@@ -192,16 +192,20 @@ async def rebuild_chain(
     service: ChainService = Depends(get_chain_service),
     registry: ChainTaskRegistry = Depends(chain_task_registry_dep),
 ) -> RebuildResponse:
-    """Start a background rebuild task.
+    """Start a background rebuild task via the shared pipeline.
 
-    Creates a ChainLinkerRun row in pending state, launches an asyncio.Task
-    through the ChainTaskRegistry, and returns the run_id immediately.
-    The task updates the row as it progresses: pending -> running -> done/failed.
+    Creates a ChainLinkerRun row in pending state (through the
+    ``PostgresChainStore.start_linker_run`` protocol method), launches
+    an ``asyncio.Task`` through the ChainTaskRegistry, and returns
+    the run_id immediately. The task updates the row as it
+    progresses: pending -> running -> done/failed.
 
-    The background worker is an intentional subset of the full CLI pipeline
-    (see app.services.chain_rebuild for scope documentation).
+    The background worker uses the shared CLI
+    :class:`ExtractionPipeline` + :class:`LinkerEngine` instead of the
+    old web-specific subset, so all 6 default linker rules (not just
+    shared-strong-entity) are applied.
     """
-    run = await service.create_linker_run_stub(
+    run = await service.create_linker_run_pending(
         db, user_id=user.id, engagement_id=request.engagement_id,
     )
 
@@ -210,16 +214,18 @@ async def rebuild_chain(
     session_factory = _get_session_factory()
 
     registry.start(
-        run.id,
-        chain_rebuild.run_rebuild(
+        run["id"],
+        run_rebuild_shared(
             session_factory=session_factory,
-            run_id=run.id,
+            run_id=run["id"],
             user_id=user.id,
             engagement_id=request.engagement_id,
         ),
     )
 
-    return RebuildResponse(run_id=run.id, status=run.status_text or "pending")
+    return RebuildResponse(
+        run_id=run["id"], status=run.get("status_text") or "pending"
+    )
 
 
 @router.get("/runs/{run_id}", response_model=RunStatusResponse)
@@ -233,11 +239,11 @@ async def get_run_status(
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
     return RunStatusResponse(
-        run_id=run.id,
-        status=run.status_text or "unknown",
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-        findings_processed=run.findings_processed,
-        relations_created=run.relations_created,
-        error=run.error,
+        run_id=run["id"],
+        status=run.get("status_text") or "unknown",
+        started_at=run["started_at"],
+        finished_at=run.get("finished_at"),
+        findings_processed=run["findings_processed"],
+        relations_created=run["relations_created"],
+        error=run.get("error"),
     )

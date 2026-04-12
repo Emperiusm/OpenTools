@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from opentools.chain.query.endpoints import (
@@ -50,31 +52,32 @@ def test_parse_empty_raises():
 def test_resolve_finding_id_found():
     master = _simple_master()
     spec = EndpointSpec(kind="finding_id", finding_id="f1")
-    result = resolve_endpoint(spec, master, store=None)
+    result = asyncio.run(resolve_endpoint(spec, master, store=None))
     assert result == {master.node_map["f1"]}
 
 
 def test_resolve_finding_id_not_found():
     master = _simple_master()
     spec = EndpointSpec(kind="finding_id", finding_id="fnonexistent")
-    assert resolve_endpoint(spec, master, store=None) == set()
+    assert asyncio.run(resolve_endpoint(spec, master, store=None)) == set()
 
 
 def test_resolve_predicate_severity_high():
     master = _simple_master()
     spec = parse_endpoint_spec("severity=high")
-    result = resolve_endpoint(spec, master, store=None)
+    result = asyncio.run(resolve_endpoint(spec, master, store=None))
     assert result == {master.node_map["f1"], master.node_map["f3"]}
 
 
 def test_resolve_predicate_tool_nmap():
     master = _simple_master()
     spec = parse_endpoint_spec("tool=nmap")
-    result = resolve_endpoint(spec, master, store=None)
+    result = asyncio.run(resolve_endpoint(spec, master, store=None))
     assert result == {master.node_map["f1"]}
 
 
-def test_resolve_entity_endpoint(engagement_store_and_chain):
+@pytest.mark.asyncio
+async def test_resolve_entity_endpoint(engagement_store_and_chain):
     """resolve an entity endpoint against a real store with a populated chain."""
     from datetime import datetime, timezone
     from opentools.chain.config import ChainConfig
@@ -92,13 +95,13 @@ def test_resolve_entity_endpoint(engagement_store_and_chain):
     engagement_store.add_finding(f)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(f)
+    await pipeline.extract_for_finding(f)
 
     cache = GraphCache(store=chain_store, maxsize=4)
-    master = cache.get_master_graph(user_id=None, include_candidates=True)
+    master = await cache.get_master_graph(user_id=None, include_candidates=True)
 
     spec = parse_endpoint_spec("ip:10.0.0.5")
-    result = resolve_endpoint(spec, master, chain_store)
+    result = await resolve_endpoint(spec, master, chain_store)
     # Should return the node index for f_ep since it mentions 10.0.0.5
     # Only if f_ep is in the master graph (it will be if it has relations,
     # otherwise the master graph includes it via the fallback "all findings" query)

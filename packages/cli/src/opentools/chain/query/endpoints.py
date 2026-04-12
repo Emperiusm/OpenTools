@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
 from opentools.chain.models import entity_id_for
 from opentools.chain.normalizers import normalize
 from opentools.chain.query.graph_cache import MasterGraph
-from opentools.chain.store_extensions import ChainStore
+
+if TYPE_CHECKING:
+    from opentools.chain.store_protocol import ChainStoreProtocol
 
 
 @dataclass
@@ -63,12 +65,16 @@ def _build_predicate(key: str, value: str) -> Callable:
     return predicate
 
 
-def resolve_endpoint(
+async def resolve_endpoint(
     spec: EndpointSpec,
     master: MasterGraph,
-    store: ChainStore,
+    store: "ChainStoreProtocol" | None,
 ) -> set[int]:
-    """Return rustworkx node indices matching the spec."""
+    """Return rustworkx node indices matching the spec.
+
+    ``store`` is only accessed for ``entity``-kind specs; it may be ``None``
+    when resolving pure in-memory specs (finding_id, predicate).
+    """
     if spec.kind == "finding_id":
         if spec.finding_id is None:
             raise ValueError("finding_id spec missing finding_id")
@@ -78,15 +84,16 @@ def resolve_endpoint(
     if spec.kind == "entity":
         if spec.entity_type is None or spec.entity_value is None:
             raise ValueError("entity spec missing type or value")
+        if store is None:
+            raise ValueError("entity endpoint requires a store")
         canonical = normalize(spec.entity_type, spec.entity_value)
         ent_id = entity_id_for(spec.entity_type, canonical)
-        rows = store.execute_all(
-            "SELECT DISTINCT finding_id FROM entity_mention WHERE entity_id = ?",
-            (ent_id,),
+        finding_ids = await store.fetch_finding_ids_for_entity(
+            ent_id, user_id=None,
         )
-        result = set()
-        for r in rows:
-            idx = master.node_map.get(r["finding_id"])
+        result: set[int] = set()
+        for fid in finding_ids:
+            idx = master.node_map.get(fid)
             if idx is not None:
                 result.add(idx)
         return result

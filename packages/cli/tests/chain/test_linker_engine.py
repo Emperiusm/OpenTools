@@ -8,6 +8,8 @@ from opentools.chain.linker.engine import LinkerEngine, get_default_rules
 from opentools.chain.types import RelationStatus
 from opentools.models import Finding, FindingStatus, Severity
 
+pytestmark = pytest.mark.asyncio
+
 
 def _finding(id: str, tool: str = "nmap", description: str = "", **kwargs) -> Finding:
     defaults = dict(
@@ -19,7 +21,7 @@ def _finding(id: str, tool: str = "nmap", description: str = "", **kwargs) -> Fi
     return Finding(**{**defaults, **kwargs})
 
 
-def _seed_two_findings_sharing_host(engagement_store, chain_store):
+async def _seed_two_findings_sharing_host(engagement_store, chain_store):
     """Insert two findings sharing IP 10.0.0.5 and run extraction on both."""
     now = datetime.now(timezone.utc)
     a = _finding("fnd_a", description="SSH on 10.0.0.5", created_at=now)
@@ -28,41 +30,52 @@ def _seed_two_findings_sharing_host(engagement_store, chain_store):
     engagement_store.add_finding(b)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(a)
-    pipeline.extract_for_finding(b)
+    await pipeline.extract_for_finding(a)
+    await pipeline.extract_for_finding(b)
     return a, b
 
 
-def test_linker_creates_edge_for_shared_host(engagement_store_and_chain):
+async def test_linker_creates_edge_for_shared_host(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
-    a, b = _seed_two_findings_sharing_host(engagement_store, chain_store)
+    a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = LinkerEngine(store=chain_store, config=ChainConfig(), rules=get_default_rules(ChainConfig()))
-    ctx = engine.make_context(user_id=None)
-    run = engine.link_finding(a.id, user_id=None, context=ctx)
+    engine = LinkerEngine(
+        store=chain_store,
+        config=ChainConfig(),
+        rules=get_default_rules(ChainConfig()),
+    )
+    ctx = await engine.make_context(user_id=None)
+    run = await engine.link_finding(a.id, user_id=None, context=ctx)
 
     assert run.findings_processed >= 1
     # An edge between fnd_a and fnd_b should exist now
-    rels = chain_store.relations_for_finding(a.id)
-    partner_ids = {r.target_finding_id if r.source_finding_id == a.id else r.source_finding_id for r in rels}
+    rels = await chain_store.relations_for_finding(a.id, user_id=None)
+    partner_ids = {
+        r.target_finding_id if r.source_finding_id == a.id else r.source_finding_id
+        for r in rels
+    }
     assert b.id in partner_ids
 
 
-def test_linker_edge_status_auto_confirmed_when_over_threshold(engagement_store_and_chain):
+async def test_linker_edge_status_auto_confirmed_when_over_threshold(engagement_store_and_chain):
     """A shared strong entity should produce weight >= 1.0 -> auto_confirmed."""
     engagement_store, chain_store, now = engagement_store_and_chain
-    a, b = _seed_two_findings_sharing_host(engagement_store, chain_store)
+    a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = LinkerEngine(store=chain_store, config=ChainConfig(), rules=get_default_rules(ChainConfig()))
-    ctx = engine.make_context(user_id=None)
-    engine.link_finding(a.id, user_id=None, context=ctx)
+    engine = LinkerEngine(
+        store=chain_store,
+        config=ChainConfig(),
+        rules=get_default_rules(ChainConfig()),
+    )
+    ctx = await engine.make_context(user_id=None)
+    await engine.link_finding(a.id, user_id=None, context=ctx)
 
-    rels = chain_store.relations_for_finding(a.id)
+    rels = await chain_store.relations_for_finding(a.id, user_id=None)
     assert len(rels) >= 1
     assert any(r.status == RelationStatus.AUTO_CONFIRMED for r in rels)
 
 
-def test_linker_no_edge_for_unrelated_findings(engagement_store_and_chain):
+async def test_linker_no_edge_for_unrelated_findings(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
     now_dt = datetime.now(timezone.utc)
     a = _finding("fnd_u1", description="unrelated one", created_at=now_dt)
@@ -71,61 +84,82 @@ def test_linker_no_edge_for_unrelated_findings(engagement_store_and_chain):
     engagement_store.add_finding(b)
 
     pipeline = ExtractionPipeline(store=chain_store, config=ChainConfig())
-    pipeline.extract_for_finding(a)
-    pipeline.extract_for_finding(b)
+    await pipeline.extract_for_finding(a)
+    await pipeline.extract_for_finding(b)
 
-    engine = LinkerEngine(store=chain_store, config=ChainConfig(), rules=get_default_rules(ChainConfig()))
-    ctx = engine.make_context(user_id=None)
-    engine.link_finding(a.id, user_id=None, context=ctx)
+    engine = LinkerEngine(
+        store=chain_store,
+        config=ChainConfig(),
+        rules=get_default_rules(ChainConfig()),
+    )
+    ctx = await engine.make_context(user_id=None)
+    await engine.link_finding(a.id, user_id=None, context=ctx)
 
-    rels = chain_store.relations_for_finding(a.id)
+    rels = await chain_store.relations_for_finding(a.id, user_id=None)
     # Without any shared entities there should be no relations
     assert rels == []
 
 
-def test_linker_sticky_user_confirmed_preserved_on_rerun(engagement_store_and_chain):
+async def test_linker_sticky_user_confirmed_preserved_on_rerun(engagement_store_and_chain):
     """USER_CONFIRMED status must survive a linker re-run."""
     engagement_store, chain_store, now = engagement_store_and_chain
-    a, b = _seed_two_findings_sharing_host(engagement_store, chain_store)
+    a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = LinkerEngine(store=chain_store, config=ChainConfig(), rules=get_default_rules(ChainConfig()))
-    ctx = engine.make_context(user_id=None)
-    engine.link_finding(a.id, user_id=None, context=ctx)
-
-    # Manually mark the edge as USER_CONFIRMED
-    chain_store._conn.execute(
-        "UPDATE finding_relation SET status = ? WHERE source_finding_id = ? OR target_finding_id = ?",
-        (RelationStatus.USER_CONFIRMED.value, a.id, a.id),
+    engine = LinkerEngine(
+        store=chain_store,
+        config=ChainConfig(),
+        rules=get_default_rules(ChainConfig()),
     )
-    chain_store._conn.commit()
+    ctx = await engine.make_context(user_id=None)
+    await engine.link_finding(a.id, user_id=None, context=ctx)
 
-    # Re-run the linker
-    engine.link_finding(a.id, user_id=None, context=ctx)
+    # Manually mark each edge as USER_CONFIRMED via protocol helper
+    rels = await chain_store.relations_for_finding(a.id, user_id=None)
+    assert rels, "expected at least one relation after initial link"
+    for rel in rels:
+        await chain_store.apply_link_classification(
+            relation_id=rel.id,
+            status=RelationStatus.USER_CONFIRMED,
+            rationale="test sticky",
+            relation_type="lateral_movement",
+            confidence=1.0,
+            user_id=None,
+        )
 
-    rels = chain_store.relations_for_finding(a.id)
+    # Re-run the linker — sticky statuses must be preserved by the
+    # ON CONFLICT CASE in upsert_relations_bulk.
+    await engine.link_finding(a.id, user_id=None, context=ctx)
+
+    rels = await chain_store.relations_for_finding(a.id, user_id=None)
     assert all(r.status == RelationStatus.USER_CONFIRMED for r in rels)
 
 
-def test_linker_run_records_stats(engagement_store_and_chain):
+async def test_linker_run_records_stats(engagement_store_and_chain):
     engagement_store, chain_store, now = engagement_store_and_chain
-    a, b = _seed_two_findings_sharing_host(engagement_store, chain_store)
+    a, b = await _seed_two_findings_sharing_host(engagement_store, chain_store)
 
-    engine = LinkerEngine(store=chain_store, config=ChainConfig(), rules=get_default_rules(ChainConfig()))
-    ctx = engine.make_context(user_id=None)
-    run = engine.link_finding(a.id, user_id=None, context=ctx)
+    engine = LinkerEngine(
+        store=chain_store,
+        config=ChainConfig(),
+        rules=get_default_rules(ChainConfig()),
+    )
+    ctx = await engine.make_context(user_id=None)
+    run = await engine.link_finding(a.id, user_id=None, context=ctx)
 
     assert run.id
     assert run.findings_processed >= 1
     assert run.relations_created >= 0
     assert run.duration_ms is not None
     assert run.generation >= 1
+    assert run.status == "done"
 
-    # The run should be in the linker_run table
-    row = chain_store.execute_one("SELECT id FROM linker_run WHERE id = ?", (run.id,))
-    assert row is not None
+    # The run should be persisted in the linker_run table
+    fetched = await chain_store.fetch_linker_runs(user_id=None, limit=10)
+    run_ids = {r.id for r in fetched}
+    assert run.id in run_ids
 
 
-def test_get_default_rules_returns_seven():
+async def test_get_default_rules_returns_seven():
     rules = get_default_rules(ChainConfig())
     assert len(rules) == 7
     names = {r.name for r in rules}

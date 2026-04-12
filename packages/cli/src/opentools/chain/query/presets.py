@@ -8,13 +8,15 @@ from __future__ import annotations
 import inspect
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from opentools.chain.config import ChainConfig
 from opentools.chain.query.endpoints import EndpointSpec, parse_endpoint_spec
 from opentools.chain.query.engine import ChainQueryEngine
 from opentools.chain.query.graph_cache import GraphCache, FindingNode, PathResult
-from opentools.chain.store_extensions import ChainStore
+
+if TYPE_CHECKING:
+    from opentools.chain.store_protocol import ChainStoreProtocol
 
 
 @dataclass
@@ -53,19 +55,19 @@ def list_presets() -> dict[str, dict]:
 # ─── built-in presets ─────────────────────────────────────────────────
 
 
-def _engagement_findings(store: ChainStore, engagement_id: str) -> list[str]:
-    rows = store.execute_all(
-        "SELECT id FROM findings WHERE engagement_id = ? AND deleted_at IS NULL",
-        (engagement_id,),
+async def _engagement_findings(
+    store: "ChainStoreProtocol", engagement_id: str
+) -> list[str]:
+    return await store.fetch_findings_for_engagement(
+        engagement_id, user_id=None,
     )
-    return [r["id"] for r in rows]
 
 
-def lateral_movement(
+async def lateral_movement(
     engagement_id: str,
     *,
     cache: GraphCache,
-    store: ChainStore,
+    store: "ChainStoreProtocol",
     config: ChainConfig,
     k: int = 10,
 ) -> list[PathResult]:
@@ -74,7 +76,7 @@ def lateral_movement(
     For each (src, tgt) pair of findings in the engagement where both
     mention a host, run a k-shortest path query and collect the best.
     """
-    finding_ids = _engagement_findings(store, engagement_id)
+    finding_ids = await _engagement_findings(store, engagement_id)
     if len(finding_ids) < 2:
         return []
 
@@ -86,7 +88,7 @@ def lateral_movement(
     src_id = finding_ids[0]
     for tgt_id in finding_ids[1:]:
         try:
-            paths = qe.k_shortest_paths(
+            paths = await qe.k_shortest_paths(
                 from_spec=parse_endpoint_spec(src_id),
                 to_spec=parse_endpoint_spec(tgt_id),
                 user_id=None, k=3, max_hops=6,
@@ -99,11 +101,11 @@ def lateral_movement(
     return results[:k]
 
 
-def priv_esc_chains(
+async def priv_esc_chains(
     engagement_id: str,
     *,
     cache: GraphCache,
-    store: ChainStore,
+    store: "ChainStoreProtocol",
     config: ChainConfig,
     k: int = 10,
 ) -> list[PathResult]:
@@ -114,7 +116,7 @@ def priv_esc_chains(
         ranks = [severity_rank.get((n.severity or "").lower(), 0) for n in path.nodes]
         return all(ranks[i] < ranks[i + 1] for i in range(len(ranks) - 1))
 
-    finding_ids = _engagement_findings(store, engagement_id)
+    finding_ids = await _engagement_findings(store, engagement_id)
     if len(finding_ids) < 2:
         return []
 
@@ -123,7 +125,7 @@ def priv_esc_chains(
     src_id = finding_ids[0]
     for tgt_id in finding_ids[1:]:
         try:
-            paths = qe.k_shortest_paths(
+            paths = await qe.k_shortest_paths(
                 from_spec=parse_endpoint_spec(src_id),
                 to_spec=parse_endpoint_spec(tgt_id),
                 user_id=None, k=5, max_hops=6,
@@ -136,37 +138,28 @@ def priv_esc_chains(
     return results[:k]
 
 
-def external_to_internal(
+async def external_to_internal(
     engagement_id: str,
     *,
     cache: GraphCache,
-    store: ChainStore,
+    store: "ChainStoreProtocol",
     config: ChainConfig,
     k: int = 10,
 ) -> list[PathResult]:
     """Paths from findings with public IPs to findings with internal IPs."""
     # Fetch findings mentioning IPs, classify by public/private
-    rows = store.execute_all(
-        """
-        SELECT DISTINCT fm.finding_id, e.canonical_value
-        FROM entity_mention fm
-        JOIN entity e ON e.id = fm.entity_id
-        WHERE e.type = 'ip'
-          AND fm.finding_id IN (
-              SELECT id FROM findings WHERE engagement_id = ? AND deleted_at IS NULL
-          )
-        """,
-        (engagement_id,),
+    rows = await store.fetch_entity_mentions_for_engagement(
+        engagement_id, entity_type="ip", user_id=None,
     )
     public_findings: set[str] = set()
     internal_findings: set[str] = set()
-    for r in rows:
+    for finding_id, canonical_value in rows:
         try:
-            ip = ipaddress.ip_address(r["canonical_value"])
+            ip = ipaddress.ip_address(canonical_value)
             if ip.is_private:
-                internal_findings.add(r["finding_id"])
+                internal_findings.add(finding_id)
             else:
-                public_findings.add(r["finding_id"])
+                public_findings.add(finding_id)
         except Exception:
             continue
 
@@ -180,7 +173,7 @@ def external_to_internal(
             if src == tgt:
                 continue
             try:
-                paths = qe.k_shortest_paths(
+                paths = await qe.k_shortest_paths(
                     from_spec=parse_endpoint_spec(src),
                     to_spec=parse_endpoint_spec(tgt),
                     user_id=None, k=3, max_hops=6,
@@ -193,17 +186,17 @@ def external_to_internal(
     return results[:k]
 
 
-def crown_jewel(
+async def crown_jewel(
     engagement_id: str,
     entity_ref: str,
     *,
     cache: GraphCache,
-    store: ChainStore,
+    store: "ChainStoreProtocol",
     config: ChainConfig,
     k: int = 10,
 ) -> list[PathResult]:
     """K-shortest paths to any finding mentioning the specified entity."""
-    finding_ids = _engagement_findings(store, engagement_id)
+    finding_ids = await _engagement_findings(store, engagement_id)
     if not finding_ids:
         return []
 
@@ -213,7 +206,7 @@ def crown_jewel(
 
     for src_id in finding_ids:
         try:
-            paths = qe.k_shortest_paths(
+            paths = await qe.k_shortest_paths(
                 from_spec=parse_endpoint_spec(src_id),
                 to_spec=to_spec,
                 user_id=None, k=3, max_hops=6,
@@ -226,30 +219,26 @@ def crown_jewel(
     return results[:k]
 
 
-def mitre_coverage(
+async def mitre_coverage(
     engagement_id: str,
     *,
-    store: ChainStore,
+    store: "ChainStoreProtocol",
 ) -> MitreCoverageResult:
     """Count MITRE ATT&CK tactic coverage across findings in the engagement."""
     from opentools.chain.linker.rules.kill_chain import TACTIC_ORDER, TECHNIQUE_TO_TACTIC
 
-    rows = store.execute_all(
-        """
-        SELECT DISTINCT e.canonical_value
-        FROM entity e
-        JOIN entity_mention em ON em.entity_id = e.id
-        JOIN findings f ON f.id = em.finding_id
-        WHERE e.type = 'mitre_technique'
-          AND f.engagement_id = ?
-          AND f.deleted_at IS NULL
-        """,
-        (engagement_id,),
+    rows = await store.fetch_entity_mentions_for_engagement(
+        engagement_id, entity_type="mitre_technique", user_id=None,
     )
 
+    # Deduplicate canonical_values (the query returns a row per mention).
+    seen_techniques: set[str] = set()
     tactic_counts: dict[str, int] = {}
-    for r in rows:
-        technique = r["canonical_value"].upper()
+    for _finding_id, canonical_value in rows:
+        technique = canonical_value.upper()
+        if technique in seen_techniques:
+            continue
+        seen_techniques.add(technique)
         tactic = TECHNIQUE_TO_TACTIC.get(technique)
         if tactic:
             tactic_counts[tactic] = tactic_counts.get(tactic, 0) + 1
