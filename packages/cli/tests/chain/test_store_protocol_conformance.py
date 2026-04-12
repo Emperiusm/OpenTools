@@ -168,6 +168,12 @@ async def conformant_store(request, tmp_path):
                             cleanup = Session()
                             try:
                                 from sqlalchemy import delete
+                                # Order matters: child tables first so
+                                # FK dependents are removed before their
+                                # parents. Finding / Engagement come last
+                                # because chain_entity_mention /
+                                # chain_finding_relation / ChainLinkerRun
+                                # reference them.
                                 for model_name in (
                                     "ChainFindingParserOutput",
                                     "ChainFindingExtractionState",
@@ -177,6 +183,8 @@ async def conformant_store(request, tmp_path):
                                     "ChainFindingRelation",
                                     "ChainEntityMention",
                                     "ChainEntity",
+                                    "Finding",
+                                    "Engagement",
                                 ):
                                     model = getattr(web_models, model_name, None)
                                     if model is None or not hasattr(model, "user_id"):

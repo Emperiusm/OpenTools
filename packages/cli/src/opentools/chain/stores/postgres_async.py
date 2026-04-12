@@ -249,13 +249,17 @@ def _insert_for(session: AsyncSession):
 
 
 def _jsonb_dumps(value: Any) -> Any:
-    """Serialize a Python value for a JSON/JSONB column.
+    """Serialize a Python value for a Text/JSON column.
 
-    Both JSON and JSONB columns accept either bytes (orjson output) or
-    native Python dict/list. We emit bytes to stay consistent with
-    AsyncChainStore's wire format.
+    The web SQLModel tables declare reasons_json / confirmed_at_reasons_json
+    / rule_stats_json as ``Column(Text)``, which asyncpg binds as
+    ``VARCHAR``. asyncpg is strict about bytes vs str (SQLite is lax),
+    so we decode orjson's bytes output to a UTF-8 string before binding.
+    Returns ``None`` for ``None`` input.
     """
-    return orjson.dumps(value) if value is not None else None
+    if value is None:
+        return None
+    return orjson.dumps(value).decode("utf-8")
 
 
 # ─── PostgresChainStore ──────────────────────────────────────────────────────
