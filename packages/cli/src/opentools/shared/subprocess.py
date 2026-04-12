@@ -78,25 +78,37 @@ async def run_streaming(
     stdout_task = asyncio.ensure_future(_read_stdout())
     stderr_task = asyncio.ensure_future(_read_stderr())
 
-    pending: set[asyncio.Task] = {stdout_task, stderr_task}
-
-    cancel_task: asyncio.Task | None = None
-    if cancellation is not None:
-        cancel_task = asyncio.ensure_future(cancellation.wait_for_cancellation())
-        pending.add(cancel_task)
-
     # --- wait -----------------------------------------------------------------
 
     timed_out = False
     cancelled = False
 
-    try:
-        done, still_pending = await asyncio.wait(pending, timeout=timeout)
+    # Background watchdog: if cancellation fires, kill the process immediately
+    # so that the I/O reader tasks unblock and asyncio.wait can return.
+    cancel_task: asyncio.Task | None = None
 
-        if cancel_task is not None and cancel_task in done:
-            # Cancellation was signalled first.
-            cancelled = True
-        elif stdout_task not in done or stderr_task not in done:
+    async def _cancellation_watchdog() -> None:
+        nonlocal cancelled
+        assert cancellation is not None
+        await cancellation.wait_for_cancellation()
+        cancelled = True
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+    if cancellation is not None:
+        cancel_task = asyncio.ensure_future(_cancellation_watchdog())
+
+    try:
+        # Only wait for I/O tasks; the watchdog runs independently and kills
+        # the process when cancelled, which unblocks the I/O tasks.
+        done, _still_pending = await asyncio.wait(
+            {stdout_task, stderr_task}, timeout=timeout
+        )
+
+        if stdout_task not in done or stderr_task not in done:
             # Timeout expired before both readers finished.
             timed_out = True
 
