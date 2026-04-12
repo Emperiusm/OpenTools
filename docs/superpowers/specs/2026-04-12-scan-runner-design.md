@@ -69,6 +69,11 @@ class ExecutionTier(StrEnum):
     NORMAL = "normal"           # 30s-300s
     HEAVY = "heavy"             # >300s, high resource, limited concurrency
 
+class TaskIsolation(StrEnum):
+    NONE = "none"               # trusted target, no isolation needed
+    CONTAINER = "container"     # run inside Docker
+    NETWORK_ISOLATED = "network_isolated"  # no outbound network (binary analysis)
+
 class EvidenceQuality(StrEnum):
     PROVEN = "proven"           # 1.0 — confirmed exploitability
     TRACED = "traced"           # 0.85 — data flow / taint trace
@@ -108,6 +113,7 @@ class Scan(BaseModel):
     tools_failed: list[str] = []
     finding_count: int = 0
     estimated_duration_seconds: int | None = None
+    metrics: ScanMetrics | None = None  # populated on scan completion
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -124,6 +130,13 @@ class ScanConfig(BaseModel):
     tool_args: dict[str, dict] = {}             # per-tool argument overrides
     notifications: ScanNotification | None = None
     steering_frequency: str = "phase_boundary"  # every_task | phase_boundary | findings_only | manual
+    target_rate_limit: TargetRateLimit | None = None
+
+class TargetRateLimit(BaseModel):
+    max_requests_per_second: int = 50           # across ALL tools hitting target
+    max_concurrent_connections: int = 10
+    backoff_on_429: bool = True                 # respect HTTP 429 responses
+    backoff_on_timeout: bool = True             # slow down if target is struggling
 
 class ScanNotification(BaseModel):
     channels: list[NotificationChannel] = []
@@ -163,6 +176,7 @@ class ScanTask(BaseModel):
     output_hash: str | None = None      # SHA-256 of stdout
     duration_ms: int | None = None
     cached: bool = False
+    isolation: TaskIsolation = TaskIsolation.NONE
     spawned_by: str | None = None       # task ID or "claude"
     spawned_reason: str | None = None
     started_at: datetime | None = None
@@ -350,6 +364,60 @@ class ScanBatch(BaseModel):
     completed_at: datetime | None = None
 ```
 
+#### Scan Quota (Web Surface)
+
+```python
+class ScanQuota(BaseModel):
+    max_concurrent_scans: int = 3           # per user
+    max_scans_per_day: int = 20             # per user
+    max_scan_duration_seconds: int = 3600   # 1 hour hard cap
+    max_assisted_mode_calls: int = 50       # LLM calls per scan
+    max_batch_size: int = 10
+    # Enforced at ScanAPI layer before plan execution
+    # Web admin can override per-user
+```
+
+#### Scan Metrics
+
+```python
+class ScanMetrics(BaseModel):
+    """Collected per-scan, persisted alongside scan record."""
+    total_tasks: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_hit_rate: float = 0.0
+    dedup_merges: int = 0
+    dedup_new: int = 0
+    dedup_rate: float = 0.0
+    avg_task_duration_ms: float = 0.0
+    max_task_duration_ms: float = 0.0
+    p95_task_duration_ms: float = 0.0
+    reactive_edges_fired: int = 0
+    tasks_spawned_by_edges: int = 0
+    tasks_spawned_by_claude: int = 0
+    steering_calls: int = 0
+    steering_avg_latency_ms: float = 0.0
+    resource_pool_waits: int = 0
+    resource_pool_avg_wait_ms: float = 0.0
+    adaptive_adjustments: int = 0
+    retries: int = 0
+    fp_flags: int = 0
+    suppressed_count: int = 0
+    trend_alerts: int = 0
+    corroboration_rate: float = 0.0
+    parser_errors: int = 0
+    output_validation_failures: int = 0
+```
+
+#### Finding Enriched Context
+
+```python
+class EnrichedContext(BaseModel):
+    code_snippet: str                   # 5 lines above + finding + 5 below
+    function_name: str | None = None
+    file_imports: list[str] = []        # helps assess exploitability
+```
+
 #### Existing Model Changes
 
 The existing `Finding` model gains one field:
@@ -406,8 +474,16 @@ packages/cli/src/opentools/scanner/
 ├── effectiveness.py    # ToolEffectivenessTracker — auto-tuning from history
 ├── trend.py            # TrendDetector — cross-engagement pattern detection
 ├── cwe.py              # CWEHierarchy — parent/child, OWASP mapping
+├── cvss.py             # CVSSCalibrator — NVD CVSS severity calibration
+├── context_enricher.py # FindingContextEnricher — code snippets, function names
 ├── cancellation.py     # CancellationToken
 ├── estimate.py         # ProgressEstimator — duration estimation from history
+├── rate_limiter.py     # TargetRateLimiter — per-host request/connection limits
+├── coalescer.py        # TaskCoalescer — merge compatible spawned tasks
+├── cleanup.py          # ScanCleanup — orphaned resource recovery on startup
+├── quota.py            # ScanQuota — per-user limits for web surface
+├── isolation.py        # TaskIsolation enforcement in executor layer
+├── metrics.py          # ScanMetrics collection and persistence
 ├── data/
 │   ├── cwe_hierarchy.json
 │   ├── cwe_owasp_map.json
@@ -597,6 +673,88 @@ When `ScanAPI.plan()` is called, infrastructure warming starts in the background
 - MCP connections begin establishing
 - Warming expires after 5 minutes if `execute()` isn't called
 
+### 2.10 Target Rate Limiting
+
+Tools targeting the same host share a rate limiter to prevent overwhelming the target:
+
+- All tools hitting the same host/URL contribute to a shared request counter
+- Default: 50 rps, 10 concurrent connections (configurable via `ScanConfig.target_rate_limit`)
+- Respects HTTP 429 responses with automatic backoff
+- Slows down if target shows timeout symptoms
+- Critical for pentest engagements — DoS-ing a client's production server is unacceptable
+
+### 2.11 Task Isolation
+
+Tasks can specify isolation levels for security:
+
+- `NONE`: default, trusted targets
+- `CONTAINER`: run inside Docker even if tool is a local CLI (binary analysis default)
+- `NETWORK_ISOLATED`: adds `--network none` to Docker run (malware analysis)
+
+The executor layer enforces isolation — `CONTAINER` tasks route through `DockerExecExecutor` regardless of original `task_type`.
+
+### 2.12 Task Coalescing
+
+Multiple reactive edges may independently spawn the same tool against different but overlapping targets. The coalescer merges compatible pending tasks into fewer, broader executions:
+
+- nuclei against 3 URLs on the same host → single nuclei run with `-l <url_list>`
+- nmap against multiple IPs from the same reactive edge → single nmap scan with all targets
+- semgrep against multiple paths → single scan with all paths
+
+Coalescing preserves individual task IDs mapping to the coalesced task for provenance tracking. Significant speedup for network scans where reactive edges spawn follow-ups for many discovered hosts.
+
+### 2.13 Dependency-Aware Pre-fetching
+
+When a running task is estimated at 80%+ completion, start pre-fetching resources for its dependents:
+
+- Warm MCP connections for dependent tasks
+- Check cache for dependent tasks
+- Verify container readiness
+
+Reduces the gap between one task completing and the next starting.
+
+### 2.14 Orphaned Resource Cleanup
+
+On engine initialization, clean up from prior crashes:
+
+- Scans with status `RUNNING` → set to `FAILED` with reason `process_crash_recovery`
+- Tasks with status `RUNNING` → set to `FAILED` with reason `interrupted`
+- Clean temp files from OutputBuffer disk spillover
+- Stop Docker containers tagged with `opentools-scan=<scan_id>`
+- Orphaned scans become resumable via `scan resume`
+
+### 2.15 Graceful Degradation
+
+Every failure mode is handled explicitly:
+
+| Component Failure | Behavior |
+|---|---|
+| Tool unavailable (preflight) | Skip if `optional=True`, fail scan if required |
+| Docker container won't start | Skip tool, report in scan summary, continue |
+| MCP server unreachable | Retry per policy, then skip tool, report in summary |
+| Parser crashes on output | Mark task `FAILED:parse_error`, raw output preserved, continue |
+| Dedup engine error | Persist raw finding without dedup, flag for manual review |
+| Store write failure | Retry 3x, then pause scan, alert user |
+| Claude steering timeout | Fall back to auto-mode behavior for that decision point |
+| System resource exhaustion | Adaptive pool reduces to floor (2), warn user |
+| Scan-level timeout | Cancel pending/running tasks, persist findings so far, status `COMPLETED:timeout` |
+| Process crash | Cleanup on restart (2.14), orphaned scans resumable |
+
+Every failure produces a `ProgressEvent` so the user sees what happened and why.
+
+### 2.16 Scan Rollback
+
+Remove all findings contributed by a specific scan without destroying the scan's audit trail:
+
+- Deletes: raw findings, dedup findings where `first_seen_scan_id` matches
+- Reverts: dedup findings that were merely updated by this scan (restores to prior state)
+- Preserves: the scan record itself, task records, steering log (audit trail intact)
+- Safe because findings are tagged with `first_seen_scan_id` and `last_confirmed_scan_id`
+
+### 2.17 Observability
+
+Structured metrics collected per-scan via `ScanMetrics` (see Section 1.4). Covers: cache hit rates, dedup rates, corroboration rates, task durations (avg/max/p95), reactive edge activity, steering call latency, resource pool contention, retry counts, parser errors. Metrics feed into: tool effectiveness tracking, profile auto-tuning, progress estimation, and user-facing scan reports.
+
 ---
 
 ## 3. Profiles, Auto-Detect, and Reactive Edges
@@ -679,6 +837,8 @@ class ProfileTool(BaseModel):
     cache_key_template: str | None = None
     optional: bool = False
     condition: str | None = None        # "language in ['python', 'java']"
+    isolation: TaskIsolation = TaskIsolation.NONE
+    preferred_output_format: str | None = None  # "json" preferred over "xml" when tool supports both
     reactive_edges: list[ReactiveEdgeTemplate] | None = None
 ```
 
@@ -869,6 +1029,7 @@ New `opentools scan` subcommand group:
 | `scan findings <scan_id>` | Show findings from running or completed scan |
 | `scan steering-log <scan_id>` | Show Claude's steering decisions |
 | `scan batch <targets_file>` | Batch scan multiple targets |
+| `scan rollback <scan_id>` | Remove all findings from a scan (undo) |
 
 Key flags: `--profile`, `--mode auto|assisted`, `--engagement`, `--ephemeral`, `--output`, `--format json|sarif|csv|md|html|stix`, `--add-tool`, `--remove-tool`, `--baseline`, `--severity`, `--concurrency`, `--timeout`, `--dry-run`.
 
@@ -894,8 +1055,11 @@ New FastAPI router at `/api/v1/scans`:
 | `/api/v1/scans/{id}/cancel` | POST | Cancel scan |
 | `/api/v1/scans/{id}/diff/{baseline}` | GET | Diff two scans |
 | `/api/v1/scans/{id}/steering-log` | GET | Get Claude steering log |
+| `/api/v1/scans/{id}/rollback` | POST | Remove all findings from a scan |
 
 Web frontend subscribes to progress via SSE using the existing store pattern. SSE supports cursor-based reconnection via the `Last-Event-ID` header — events are replayed from the persisted event store.
+
+**Scan quotas** are enforced at the API layer for multi-user deployments (see `ScanQuota` in Section 1.4). Prevents resource abuse: max concurrent scans per user, max scans per day, max scan duration, max assisted-mode LLM calls, max batch size. Web admin can override per-user.
 
 ### 4.5 Claude Skill Surface
 
@@ -921,6 +1085,8 @@ Tool stdout (streaming bytes)
     → DedupEngine (bloom filter fast-path, precision-aware fuzzy match)
     → EngagementDedupEngine (cross-scan reconciliation)
     → CorroborationScorer (evidence quality + tool diversity + effectiveness)
+    → CVSSCalibrator (adjust severity using NVD CVSS for known CVEs)
+    → FindingContextEnricher (extract surrounding code context for source findings)
     → FindingLifecycle (auto-transition: discovered → confirmed)
     → FPMemory + ConfidenceDecay (flag known FPs, decay stale confidence)
     → CorrelationEngine (attack chains, kill chain, causal chains)
@@ -946,11 +1112,14 @@ Standardizes findings across tools for comparable dedup:
 
 ### 5.3 Dedup Strategy
 
-- **Primary key**: `(CWE, location_fingerprint)` when both present
-- **Fallback keys**: `(title_normalized, location)`, `(CWE, evidence_hash)`, `evidence_hash`
-- **Fuzzy matching**: overlapping line ranges, related CWEs (parent/child), same file within N lines (default 5)
+**Multi-pass dedup** for consistent merges:
+
+- **Pass 1 (strict)**: exact fingerprint match only — `(CWE, location_fingerprint)` when both present, fallback keys `(title_normalized, location)`, `(CWE, evidence_hash)`, `evidence_hash`. Groups findings unambiguously. Fast.
+- **Pass 2 (fuzzy)**: precision-aware fuzzy match on remaining unmatched findings only — overlapping line ranges, related CWEs (parent/child via CWE hierarchy), same file within N lines (default 5). Only considers findings that didn't match in Pass 1. Prevents: finding A fuzzy-matches B, but B would have exact-matched C (inconsistent merge).
+
+Additional dedup properties:
 - **Precision-aware**: `EXACT_LINE` matches `LINE_RANGE` if within range; `FILE`-level findings don't merge with `EXACT_LINE` unless CWE matches exactly
-- **Bloom filter**: O(k) fast-path reject for new findings before checking full index
+- **Bloom filter**: O(k) fast-path reject for new findings before checking full index in Pass 1
 - **Severity consensus**: weighted vote by parser confidence tier; ties break to more severe
 
 ### 5.4 Corroboration Scoring
@@ -974,7 +1143,28 @@ Parser confidence tiers:
 - **Tier 3 (0.5)**: nmap, nikto — inferred findings
 - **Tier 4 (0.3)**: regex-based extractors
 
-### 5.5 Finding Lifecycle
+### 5.5 CVSS-Calibrated Severity
+
+When a finding maps to a known CVE (extracted from tool output or CWE→CVE mapping), the CVSS score from NVD calibrates severity:
+
+- Lookup CVSS from local cache or NVD API
+- CVSS → severity: 9.0-10.0 = critical, 7.0-8.9 = high, 4.0-6.9 = medium, 0.1-3.9 = low
+- If CVSS disagrees with tool consensus by 2+ levels → trust CVSS (more standardized)
+- If 1 level difference → keep tool consensus (tools have target-specific context CVSS lacks)
+
+Catches cases where a tool reports "medium" but the CVE is actually CVSS 9.8 critical.
+
+### 5.6 Finding Context Enrichment
+
+When a source code finding is discovered, automatically extract surrounding context:
+
+- 5 lines above + finding line + 5 lines below (code snippet)
+- Enclosing function name
+- File imports (helps assess exploitability — e.g., `import subprocess` near a command injection)
+
+Stored as `EnrichedContext` on the finding. Compact enough to include without bloating storage. Valuable for Claude in assisted mode (assesses severity from context without separate code reads) and human reviewers.
+
+### 5.7 Finding Lifecycle
 
 | Transition | Trigger | Type |
 |-----------|---------|------|
@@ -984,14 +1174,14 @@ Parser confidence tiers:
 | reported → remediated | User marks fix applied | Manual |
 | remediated → verified | Next scan doesn't find it (scan diff) | Auto |
 
-### 5.6 Confidence Decay
+### 5.8 Confidence Decay
 
 Findings not reconfirmed in recent scans lose confidence over time:
 - 100% for first 30 days
 - -5% per 30-day period after that
 - Floor: 20% (never fully disappear — needs explicit dismissal)
 
-### 5.7 Parser Plugin System
+### 5.9 Parser Plugin System
 
 Custom parsers live in discoverable directories:
 - `packages/plugin/parsers/` (plugin-level)
@@ -999,11 +1189,11 @@ Custom parsers live in discoverable directories:
 
 Plugins implement the `ParserPlugin` protocol (`name`, `version`, `confidence_tier`, `validate()`, `parse()`). Plugin parsers override builtins of the same name.
 
-### 5.8 CWE Hierarchy
+### 5.10 CWE Hierarchy
 
 Bundled from MITRE CWE catalog. Supports: parent/child relationships, OWASP Top 10 mapping, hierarchical suppression (suppress parent → suppresses children), related-CWE fuzzy matching.
 
-### 5.9 Scan Diff
+### 5.11 Scan Diff
 
 ```python
 class ScanDiff(BaseModel):
@@ -1028,7 +1218,7 @@ class DiffSummary(BaseModel):
 
 Matching uses the same semantic fingerprint as dedup.
 
-### 5.10 Output Formats
+### 5.12 Output Formats
 
 | Format | Use Case |
 |--------|---------|
@@ -1066,6 +1256,8 @@ New Alembic migration `006_scan_runner.py` adds 13 tables:
 | `output_cache` | Content-fingerprint cache for tool output |
 | `tool_effectiveness` | Historical tool accuracy stats per target type |
 | `scan_batch` | Batch scan coordination |
+| `scan_quota` | Per-user scan limits for web surface |
+| `scan_metrics` | Observability metrics per scan |
 
 SQLite adaptation follows the Phase 3C.1.5 pattern: JSON → TEXT, TIMESTAMP WITH TIME ZONE → TEXT (ISO 8601), UUID → TEXT.
 
@@ -1181,3 +1373,21 @@ Auto-tuning makes the scan-runner improve over time without manual profile adjus
 ## Appendix: Cross-Engagement Trend Detection
 
 Same finding fingerprint in 3+ engagements triggers a `TrendResult`. Surfaces as: CLI warnings, web trends dashboard, report "Systemic Issues" section, and Claude steering context.
+
+## Appendix: Compressed Output Caching
+
+Output cache uses zstd compression for large tool outputs:
+- ~3:1 compression ratio, <5ms decompression for typical outputs
+- 500MB of cached outputs → ~170MB on disk
+- Cache key includes `tool_version` + `parser_version` for automatic invalidation
+- Cache entries have `last_hit_at` and `hit_count` for LRU eviction
+
+## Appendix: Preferred Output Format Selection
+
+When tools support multiple output formats, prefer the fastest-to-parse format:
+- nmap: `-oX` (XML) — well-structured, existing parser
+- nuclei: `-jsonl` — fastest to parse, one finding per line
+- semgrep: `--json` — single JSON document
+- trivy: `--format json` — single JSON document
+
+Profile tools specify `preferred_output_format` to guide command template generation.
