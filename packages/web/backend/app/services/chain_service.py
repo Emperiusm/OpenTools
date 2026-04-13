@@ -343,9 +343,10 @@ class ChainService:
                 if src in id_to_idx and tgt in id_to_idx:
                     g.add_edge(id_to_idx[src], id_to_idx[tgt], r.weight)
             centrality = rx.betweenness_centrality(g)
-            max_c = max(centrality.values()) if centrality else 1.0
+            centrality_dict = dict(centrality)
+            max_c = max(centrality_dict.values()) if centrality_dict else 1.0
             for fid, idx in id_to_idx.items():
-                raw = centrality.get(idx, 0.0)
+                raw = centrality_dict.get(idx, 0.0)
                 pivotality_scores[fid] = raw / max_c if max_c > 0 else 0.0
 
         # Build nodes
