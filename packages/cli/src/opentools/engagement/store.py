@@ -228,6 +228,24 @@ class EngagementStore:
             severity_conflicts=severity_conflicts,
         )
 
+    def get_sidebar_summaries(self) -> list[tuple[str, int, int]]:
+        """Return (engagement_id, critical_count, high_count) for all engagements.
+
+        Single query — replaces N calls to get_summary() for sidebar rendering.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT e.id,
+                   COALESCE(SUM(CASE WHEN f.severity = 'critical' THEN 1 ELSE 0 END), 0) AS critical,
+                   COALESCE(SUM(CASE WHEN f.severity = 'high' THEN 1 ELSE 0 END), 0) AS high
+            FROM engagements e
+            LEFT JOIN findings f
+                ON f.engagement_id = e.id AND f.deleted_at IS NULL
+            GROUP BY e.id
+            """,
+        ).fetchall()
+        return [(r["id"], r["critical"], r["high"]) for r in rows]
+
     # ------------------------------------------------------------------
     # Findings
     # ------------------------------------------------------------------
