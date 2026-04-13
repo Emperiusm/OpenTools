@@ -88,6 +88,7 @@ class SubgraphMeta(BaseModel):
     rendered_findings: int
     filtered: bool
     generation: int
+    engagements: list[dict] = []
 
 
 class SubgraphResponse(BaseModel):
@@ -97,6 +98,25 @@ class SubgraphResponse(BaseModel):
 
 class RelationStatusUpdate(BaseModel):
     status: str
+
+
+class CalibrateRequest(BaseModel):
+    scope: str = "user"
+    engagement_id: Optional[str] = None
+    dry_run: bool = False
+
+
+class CalibrateResponse(BaseModel):
+    rules: list[dict]
+    edges_updated: int
+    below_threshold: bool
+    total_decisions: int
+    minimum_required: int
+
+
+class ExportPathRequest(BaseModel):
+    finding_ids: list[str]
+    engagement_id: Optional[str] = None
 
 
 def get_chain_service() -> ChainService:
@@ -267,7 +287,8 @@ async def get_run_status(
 
 @router.get("/subgraph", response_model=SubgraphResponse)
 async def get_subgraph(
-    engagement_id: str,
+    engagement_id: Optional[str] = None,
+    engagement_ids: Optional[str] = None,
     severity: Optional[str] = None,
     status_filter: Optional[str] = Query(default=None, alias="status"),
     max_nodes: int = 500,
@@ -280,11 +301,13 @@ async def get_subgraph(
 ) -> SubgraphResponse:
     severities = set(severity.split(",")) if severity else None
     statuses = set(status_filter.split(",")) if status_filter else None
+    eng_ids_list = engagement_ids.split(",") if engagement_ids else None
 
     result = await service.subgraph_for_engagement(
         db,
         user_id=user.id,
         engagement_id=engagement_id,
+        engagement_ids=eng_ids_list,
         severities=severities,
         statuses=statuses,
         max_nodes=max_nodes,
@@ -319,3 +342,65 @@ async def update_relation(
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="relation not found")
     return result
+
+
+@router.post("/calibrate", response_model=CalibrateResponse)
+async def calibrate_weights(
+    request: CalibrateRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CalibrateResponse:
+    from app.services.chain_calibration import calibrate
+
+    if request.scope not in ("user", "engagement"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="scope must be 'user' or 'engagement'",
+        )
+    if request.scope == "engagement" and not request.engagement_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="engagement_id required when scope is 'engagement'",
+        )
+
+    result = await calibrate(
+        db,
+        user_id=user.id,
+        engagement_id=request.engagement_id if request.scope == "engagement" else None,
+        dry_run=request.dry_run,
+    )
+
+    if result["below_threshold"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Need at least {result['minimum_required']} user decisions, have {result['total_decisions']}",
+        )
+
+    return CalibrateResponse(**result)
+
+
+@router.post("/export/path")
+async def export_path(
+    request: ExportPathRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.chain_export import export_path_markdown
+
+    if len(request.finding_ids) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Path must contain at least 2 findings",
+        )
+
+    try:
+        markdown = await export_path_markdown(
+            db,
+            user_id=user.id,
+            finding_ids=request.finding_ids,
+            engagement_id=request.engagement_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    return {"markdown": markdown}
