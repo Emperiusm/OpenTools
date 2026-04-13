@@ -163,6 +163,27 @@ class ScanService:
             self.session.add(t)
         await self.session.commit()
 
+    async def get_task_by_ticket(self, scan_id: str, ticket_id: str) -> ScanTaskRecord | None:
+        """Find a task by its approval ticket ID within a scan."""
+        from sqlalchemy import select
+        stmt = (
+            select(ScanTaskRecord)
+            .where(ScanTaskRecord.scan_id == scan_id)
+            .where(ScanTaskRecord.approval_ticket_id == ticket_id)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def update_task_approval_status(self, task_id: str, status: str) -> None:
+        """Update a task's status for gate approval/rejection."""
+        from sqlalchemy import update
+        stmt = (
+            update(ScanTaskRecord)
+            .where(ScanTaskRecord.id == task_id)
+            .values(status=status)
+        )
+        await self.session.execute(stmt)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
