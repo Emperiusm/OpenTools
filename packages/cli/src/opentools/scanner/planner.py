@@ -11,6 +11,7 @@ ScanTask objects ready for ScanEngine.load_tasks().
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from typing import Optional
 
 from opentools.scanner.models import (
@@ -217,15 +218,25 @@ class ScanPlanner:
 
             previous_phase_ids = phase_task_ids
 
+        # Build tool → task index for O(1) lookup
+        tasks_by_tool: dict[str, list[ScanTask]] = defaultdict(list)
+        for task in all_tasks:
+            tasks_by_tool[task.tool].append(task)
+
         # Attach reactive edges from profile-level templates
-        self._attach_reactive_edges(all_tasks, profile.reactive_edges)
+        for template in profile.reactive_edges:
+            if template.trigger_tool == "*":
+                for task in all_tasks:
+                    self._attach_reactive_edges_to_task(task, [template])
+            else:
+                for task in tasks_by_tool.get(template.trigger_tool, []):
+                    self._attach_reactive_edges_to_task(task, [template])
 
         # Attach per-tool reactive edges
         for phase in profile.phases:
             for tool_def in phase.tools:
                 if tool_def.reactive_edges:
-                    matching_tasks = [t for t in all_tasks if t.tool == tool_def.tool]
-                    for task in matching_tasks:
+                    for task in tasks_by_tool.get(tool_def.tool, []):
                         self._attach_reactive_edges_to_task(task, tool_def.reactive_edges)
 
         return all_tasks
