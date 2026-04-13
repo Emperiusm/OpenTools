@@ -119,7 +119,7 @@ class TestTaskStatus:
         assert TaskStatus.SKIPPED == "skipped"
 
     def test_count(self):
-        assert len(list(TaskStatus)) == 6
+        assert len(list(TaskStatus)) == 7
 
 
 class TestExecutionTier:

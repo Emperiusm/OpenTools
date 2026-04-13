@@ -112,3 +112,29 @@ class TestRunStreaming:
         )
         assert "error_output" in result.stderr
         assert result.exit_code == 0
+
+
+class TestRunStreamingEnv:
+    """Tests for environment variable passing to subprocess."""
+
+    @pytest.mark.asyncio
+    async def test_env_vars_passed_to_subprocess(self):
+        """Custom env dict is forwarded to the subprocess."""
+        result = await run_streaming(
+            [sys.executable, "-c", "import os; print(os.environ.get('OT_TEST_PROXY', 'NOT_SET'))"],
+            on_output=lambda _: None,
+            env={"OT_TEST_PROXY": "socks5://127.0.0.1:1080"},
+        )
+        assert "socks5://127.0.0.1:1080" in result.stdout
+        assert result.exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_env_none_inherits_parent(self):
+        """env=None (default) inherits parent process environment."""
+        result = await run_streaming(
+            [sys.executable, "-c", "import os; print(os.environ.get('PATH', 'NOT_SET'))"],
+            on_output=lambda _: None,
+            env=None,
+        )
+        assert "NOT_SET" not in result.stdout
+        assert result.exit_code == 0

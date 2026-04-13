@@ -381,6 +381,114 @@ async def cancel_scan(
 
 
 # ---------------------------------------------------------------------------
+# Approval gate endpoints
+# ---------------------------------------------------------------------------
+
+
+class GateResponse(BaseModel):
+    ticket_id: str
+    task_id: str
+    tool: str
+    command: str | None = None
+    description: str
+    status: str
+    expires_at: str | None = None
+
+class GateDecisionResponse(BaseModel):
+    ticket_id: str
+    decision: str
+
+class GateRejectRequest(BaseModel):
+    reason: str = "operator rejected"
+
+
+@router.get("/{scan_id}/gates")
+async def list_pending_gates(
+    scan_id: str,
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List tasks awaiting operator approval."""
+    svc = ScanService(session, user)
+    scan = await svc.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    tasks = await svc.get_scan_tasks(scan_id)
+    gates = []
+    for t in tasks:
+        if t.status == "awaiting_approval" and t.approval_ticket_id:
+            gates.append(GateResponse(
+                ticket_id=t.approval_ticket_id,
+                task_id=t.id, tool=t.tool, command=t.command,
+                description="",
+                status=t.status,
+                expires_at=t.approval_expires_at.isoformat() if t.approval_expires_at else None,
+            ))
+    return {"scan_id": scan_id, "gates": gates}
+
+
+@router.post("/{scan_id}/gates/{ticket_id}/approve")
+async def approve_gate(
+    scan_id: str, ticket_id: str,
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Approve a pending gate. Write-before-signal."""
+    svc = ScanService(session, user)
+    scan = await svc.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    task_record = await svc.get_task_by_ticket(scan_id, ticket_id)
+    if task_record is None:
+        raise HTTPException(status_code=404, detail="Gate ticket not found")
+    if task_record.status != "awaiting_approval":
+        raise HTTPException(status_code=409, detail=f"Gate already resolved: {task_record.status}")
+
+    # 1. PERSIST FIRST (source of truth)
+    await svc.update_task_approval_status(task_record.id, "approved")
+    await session.commit()
+
+    # 2. Signal event (best-effort tripwire)
+    from opentools.scanner.api import _active_scans
+    entry = _active_scans.get(scan_id, {})
+    registry = entry.get("approval_registry")
+    if registry is not None:
+        registry.signal(ticket_id)
+
+    return GateDecisionResponse(ticket_id=ticket_id, decision="approved")
+
+
+@router.post("/{scan_id}/gates/{ticket_id}/reject")
+async def reject_gate(
+    scan_id: str, ticket_id: str,
+    body: GateRejectRequest = GateRejectRequest(),
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Reject a pending gate. Write-before-signal."""
+    svc = ScanService(session, user)
+    scan = await svc.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    task_record = await svc.get_task_by_ticket(scan_id, ticket_id)
+    if task_record is None:
+        raise HTTPException(status_code=404, detail="Gate ticket not found")
+    if task_record.status != "awaiting_approval":
+        raise HTTPException(status_code=409, detail=f"Gate already resolved: {task_record.status}")
+
+    await svc.update_task_approval_status(task_record.id, "rejected")
+    await session.commit()
+
+    from opentools.scanner.api import _active_scans
+    entry = _active_scans.get(scan_id, {})
+    registry = entry.get("approval_registry")
+    if registry is not None:
+        registry.signal(ticket_id)
+
+    return GateDecisionResponse(ticket_id=ticket_id, decision="rejected")
+
+
+# ---------------------------------------------------------------------------
 # SSE streaming
 # ---------------------------------------------------------------------------
 

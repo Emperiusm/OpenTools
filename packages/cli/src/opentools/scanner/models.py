@@ -58,6 +58,7 @@ class TaskStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    AWAITING_APPROVAL = "awaiting_approval"
 
 
 class ExecutionTier(StrEnum):
@@ -185,6 +186,12 @@ class GraphSnapshot(BaseModel):
     finding_count: int = 0
 
 
+class ApprovalRequirement(BaseModel):
+    """Gate metadata for tasks requiring operator approval before execution."""
+    timeout_seconds: int = 3600
+    description: str = ""
+
+
 class ReactiveEdge(BaseModel):
     id: str
     trigger_task_id: str
@@ -229,6 +236,9 @@ class ScanTask(BaseModel):
     spawned_reason: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    requires_approval: Optional[ApprovalRequirement] = None
+    approval_ticket_id: Optional[str] = None
+    approval_expires_at: Optional[datetime] = None
 
 
 class Scan(BaseModel):

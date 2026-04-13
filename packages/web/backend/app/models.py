@@ -280,6 +280,9 @@ class ScanTaskRecord(SQLModel, table=True):
     isolation: str = Field(default="none")
     spawned_by: Optional[str] = None
     spawned_reason: Optional[str] = None
+    # Approval gate fields
+    approval_ticket_id: Optional[str] = None
+    approval_expires_at: Optional[datetime] = Field(default=None, **_TZ_KW)
     started_at: Optional[datetime] = Field(default=None, **_TZ_KW)
     completed_at: Optional[datetime] = Field(default=None, **_TZ_KW)
 

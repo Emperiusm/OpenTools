@@ -45,6 +45,7 @@ async def run_streaming(
     on_output: Callable[[bytes], None],
     timeout: int = 300,
     cancellation: object | None = None,  # CancellationToken
+    env: dict[str, str] | None = None,
 ) -> SubprocessResult:
     """Spawn an async subprocess and stream its stdout in 4 KiB chunks.
 
@@ -69,6 +70,7 @@ async def run_streaming(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
     except FileNotFoundError as exc:
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
