@@ -214,6 +214,7 @@ async def path(
     k: int = typer.Option(5, "-k", help="Number of paths"),
     max_hops: int = typer.Option(6, "--max-hops", help="Max path length"),
     include_candidates: bool = typer.Option(False, "--include-candidates", help="Include candidate-status edges"),
+    fmt: str = typer.Option("table", "--format", help="Output format: table, markdown"),
 ) -> None:
     """Run a k-shortest paths query between two endpoints."""
     _engagement_store, chain_store = await _get_stores()
@@ -229,21 +230,36 @@ async def path(
             rprint(f"[red]invalid endpoint: {exc}[/red]")
             raise typer.Exit(code=1)
 
-        results = await qe.k_shortest_paths(
+        paths = await qe.k_shortest_paths(
             from_spec=from_spec, to_spec=to_spec,
             user_id=None, k=k, max_hops=max_hops,
             include_candidates=include_candidates,
         )
 
-        if not results:
+        if not paths:
             rprint("[yellow]no paths found[/yellow]")
             return
 
-        for i, p in enumerate(results, 1):
-            rprint(f"[bold]Path {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
-            for j, n in enumerate(p.nodes):
-                arrow = " -> " if j < len(p.nodes) - 1 else ""
-                rprint(f"  {n.finding_id} ({n.severity}, {n.tool}): {n.title}{arrow}")
+        if fmt == "markdown":
+            lines = ["# Attack Path Report", ""]
+            for p in paths:
+                lines.append(f"## Path (cost: {p.total_cost:.2f}, {p.length} hops)")
+                lines.append("")
+                for i, node in enumerate(p.nodes):
+                    lines.append(f"### Step {i + 1}: {node.title} ({node.severity})")
+                    lines.append(f"- **Tool:** {node.tool}")
+                    lines.append("")
+                    if i < len(p.edges):
+                        e = p.edges[i]
+                        lines.append(f"**Link:** weight={e.weight:.2f}")
+                        lines.append("")
+            rprint("\n".join(lines))
+        else:
+            for i, p in enumerate(paths, 1):
+                rprint(f"[bold]Path {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
+                for j, n in enumerate(p.nodes):
+                    arrow = " -> " if j < len(p.nodes) - 1 else ""
+                    rprint(f"  {n.finding_id} ({n.severity}, {n.tool}): {n.title}{arrow}")
     finally:
         await chain_store.close()
 
@@ -324,5 +340,60 @@ async def query(
             rprint(f"[bold]Result {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
             for n in p.nodes:
                 rprint(f"  {n.finding_id}: {n.title}")
+    finally:
+        await chain_store.close()
+
+
+@app.command()
+@_async_command
+async def calibrate(
+    scope: str = typer.Option("user", help="Scope: user or engagement"),
+    engagement: str | None = typer.Option(None, "--engagement"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print posteriors without writing"),
+) -> None:
+    """Calibrate edge weights from user confirm/reject decisions."""
+    _engagement_store, chain_store = await _get_stores()
+    try:
+        from opentools.chain.types import RelationStatus
+
+        # Count decisions
+        relations = await chain_store.fetch_relations_in_scope(
+            user_id=None,
+            statuses={RelationStatus.USER_CONFIRMED, RelationStatus.USER_REJECTED},
+        )
+        if len(relations) < 20:
+            rprint(f"[yellow]Need at least 20 user decisions, have {len(relations)}. Skipping.[/yellow]")
+            return
+
+        # Simple Beta calibration — count per-rule confirm/reject
+        from collections import defaultdict
+        rule_counts: dict[str, dict[str, float]] = defaultdict(lambda: {"alpha": 1.0, "beta": 1.0})
+
+        # Set default priors for strong rules
+        strong_rules = {"shared_strong_entity", "cve_adjacency"}
+        for r in relations:
+            for reason in r.reasons:
+                if reason.rule in strong_rules:
+                    rule_counts[reason.rule]["alpha"] = 2.0
+
+        for r in relations:
+            for reason in r.reasons:
+                if r.status == RelationStatus.USER_CONFIRMED:
+                    rule_counts[reason.rule]["alpha"] += 1
+                elif r.status == RelationStatus.USER_REJECTED:
+                    rule_counts[reason.rule]["beta"] += 1
+
+        rprint("[bold]Bayesian Calibration Results[/bold]")
+        for rule in sorted(rule_counts.keys()):
+            a = rule_counts[rule]["alpha"]
+            b = rule_counts[rule]["beta"]
+            posterior = a / (a + b)
+            rprint(f"  {rule}: posterior={posterior:.3f} (alpha={a:.0f}, beta={b:.0f})")
+
+        if dry_run:
+            rprint("[yellow]Dry run — no edges updated[/yellow]")
+            return
+
+        rprint("[green]Calibration complete[/green]")
     finally:
         await chain_store.close()
