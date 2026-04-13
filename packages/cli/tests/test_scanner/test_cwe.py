@@ -107,3 +107,25 @@ class TestGetOwaspCategory:
         category = hierarchy.get_owasp_category("CWE-564")
         assert category is not None
         assert "Injection" in category
+
+
+# ===========================================================================
+# resolve_alias — O(1) index
+# ===========================================================================
+
+
+def test_resolve_alias_no_linear_scan():
+    """resolve_alias should not iterate over all aliases (O(1) lookup)."""
+    from opentools.scanner.cwe import CWEHierarchy
+
+    cwe = CWEHierarchy()
+
+    # Verify the _aliases_lower index exists and has entries
+    assert hasattr(cwe, "_aliases_lower"), "Expected pre-built lowercase alias index"
+    assert len(cwe._aliases_lower) > 0
+
+    # Verify a case-insensitive lookup works via the index
+    if cwe._aliases:
+        first_key = next(iter(cwe._aliases))
+        result = cwe.resolve_alias(first_key.upper())
+        assert result is not None

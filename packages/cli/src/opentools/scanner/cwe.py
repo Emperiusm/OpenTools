@@ -24,6 +24,11 @@ class CWEHierarchy:
         self._aliases = _load_json("cwe_aliases.json")
         self._owasp = _load_json("cwe_owasp_map.json")
 
+        # Pre-build lowercase alias index for O(1) case-insensitive lookup
+        self._aliases_lower: dict[str, str] = {
+            k.lower(): v for k, v in self._aliases.items()
+        }
+
     def get_name(self, cwe_id: str) -> str | None:
         """Get human-readable name for a CWE ID."""
         entry = self._hierarchy.get(cwe_id)
@@ -92,25 +97,14 @@ class CWEHierarchy:
         """Resolve alias/shorthand to canonical CWE ID.
 
         If already a canonical CWE ID, returns it directly.
-        Case-insensitive lookup.
+        Case-insensitive O(1) lookup via pre-built index.
         """
         # Pass-through for canonical IDs that exist in the hierarchy
         if alias in self._hierarchy:
             return alias
 
-        # Case-insensitive lookup in aliases
-        lower = alias.lower()
-        # Check aliases dict (keys are already lowercase per the JSON)
-        result = self._aliases.get(lower)
-        if result is not None:
-            return result
-
-        # Try case-insensitive scan as a fallback
-        for key, value in self._aliases.items():
-            if key.lower() == lower:
-                return value
-
-        return None
+        # O(1) case-insensitive lookup
+        return self._aliases_lower.get(alias.lower())
 
     def get_owasp_category(self, cwe_id: str) -> str | None:
         """Map CWE to OWASP Top 10 2021 category.
