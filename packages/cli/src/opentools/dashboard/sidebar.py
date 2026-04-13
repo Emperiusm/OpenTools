@@ -77,13 +77,18 @@ class EngagementSidebar(Widget):
     # ------------------------------------------------------------------
 
     def update_from_state(self) -> None:
-        """Rebuild the list from ``self.state.engagements``."""
+        """Rebuild the list from ``self.state.engagements`` using batch query."""
+        # Single query instead of N calls to get_summary()
+        summary_map: dict[str, tuple[int, int]] = {}
+        try:
+            for eng_id, critical, high in self.state.store.get_sidebar_summaries():
+                summary_map[eng_id] = (critical, high)
+        except Exception:
+            pass
+
         self._all_items = []
         for eng in self.state.engagements:
-            summary = self.state.store.get_summary(eng.id)
-            fc = summary.finding_counts
-            critical = fc.get("critical", 0)
-            high = fc.get("high", 0)
+            critical, high = summary_map.get(eng.id, (0, 0))
             self._all_items.append((eng, critical, high))
 
         # Apply current filter value (if the widget is already mounted)

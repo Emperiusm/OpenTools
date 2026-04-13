@@ -64,6 +64,11 @@ class DashboardState:
         self.iocs: list[IOC] = []
         self.containers: list[ContainerStatus] = []
 
+        # Change tracking for skip-refresh optimization
+        self._last_finding_count: int = 0
+        self._last_timeline_count: int = 0
+        self._last_ioc_count: int = 0
+
     # ------------------------------------------------------------------
     # Refresh helpers
     # ------------------------------------------------------------------

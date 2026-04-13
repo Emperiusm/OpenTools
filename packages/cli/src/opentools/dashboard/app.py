@@ -156,22 +156,25 @@ class DashboardApp(App):
             self.query_one(SummaryStrip).update_from_state()
         except Exception:
             pass
+
+        # Only refresh the currently active tab
         try:
-            self.query_one(FindingsTab).update_from_state()
+            active = self.query_one(TabbedContent).active
         except Exception:
-            pass
-        try:
-            self.query_one(TimelineTab).update_from_state()
-        except Exception:
-            pass
-        try:
-            self.query_one(IOCsTab).update_from_state()
-        except Exception:
-            pass
-        try:
-            self.query_one(ContainersTab).update_from_state()
-        except Exception:
-            pass
+            active = "findings"
+
+        tab_map = {
+            "findings": FindingsTab,
+            "timeline": TimelineTab,
+            "iocs": IOCsTab,
+            "containers": ContainersTab,
+        }
+        tab_class = tab_map.get(active)
+        if tab_class is not None:
+            try:
+                self.query_one(tab_class).update_from_state()
+            except Exception:
+                pass
 
         if "findings" in changes:
             c = changes["findings"]
@@ -195,6 +198,19 @@ class DashboardApp(App):
             self.query_one(TabbedContent).active = tab_id
         except Exception:
             pass
+        # Refresh the newly visible tab so it's up to date
+        tab_map = {
+            "findings": FindingsTab,
+            "timeline": TimelineTab,
+            "iocs": IOCsTab,
+            "containers": ContainersTab,
+        }
+        tab_class = tab_map.get(tab_id)
+        if tab_class is not None:
+            try:
+                self.query_one(tab_class).update_from_state()
+            except Exception:
+                pass
 
     def action_new_engagement(self) -> None:
         from opentools.dashboard.dialogs.engagement_create import EngagementCreateDialog
