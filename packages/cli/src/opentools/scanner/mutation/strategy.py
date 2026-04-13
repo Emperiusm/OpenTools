@@ -1,10 +1,18 @@
 """MutationStrategy protocol and built-in strategy implementations."""
 from __future__ import annotations
 
+import re
 from typing import Protocol, runtime_checkable
 
 from opentools.scanner.models import ExecutionTier, ScanTask, TaskType
 from opentools.scanner.mutation.models import KillChainState
+
+_SAFE_HOST_RE = re.compile(r'^[\w.\-:\[\]]+$')  # alphanumeric, dots, hyphens, colons, brackets (IPv6)
+
+
+def _validate_host(host: str) -> bool:
+    """Reject hosts containing shell metacharacters."""
+    return bool(_SAFE_HOST_RE.match(host)) and len(host) <= 253
 
 
 @runtime_checkable
@@ -72,6 +80,9 @@ class RedisProbeStrategy:
         new_tasks: list[ScanTask] = []
 
         for svc in redis_services:
+            if not _validate_host(svc.host):
+                continue
+
             key = f"{svc.host}:{svc.port}"
             if key in self._spawned_keys:
                 continue

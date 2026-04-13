@@ -435,6 +435,9 @@ async def approve_gate(
 ):
     """Approve a pending gate. Write-before-signal."""
     svc = ScanService(session, user)
+    scan = await svc.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
     task_record = await svc.get_task_by_ticket(scan_id, ticket_id)
     if task_record is None:
         raise HTTPException(status_code=404, detail="Gate ticket not found")
@@ -464,6 +467,9 @@ async def reject_gate(
 ):
     """Reject a pending gate. Write-before-signal."""
     svc = ScanService(session, user)
+    scan = await svc.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
     task_record = await svc.get_task_by_ticket(scan_id, ticket_id)
     if task_record is None:
         raise HTTPException(status_code=404, detail="Gate ticket not found")

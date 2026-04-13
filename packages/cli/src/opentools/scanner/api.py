@@ -149,6 +149,7 @@ class ScanAPI:
         Returns:
             Updated Scan object with final status.
         """
+        from opentools.scanner.approval import ApprovalRegistry
         from opentools.scanner.engine import ScanEngine
         from opentools.shared.progress import EventBus
         from opentools.shared.resource_pool import AdaptiveResourcePool
@@ -156,11 +157,15 @@ class ScanAPI:
         cancel = CancellationToken()
         event_bus = EventBus()
 
-        # Set up resource pool
+        # Set up resource pool — approval_gate group is unlimited so gates
+        # never block on the concurrency limiter.
         max_concurrent = 8
         if scan.config and scan.config.max_concurrent_tasks:
             max_concurrent = scan.config.max_concurrent_tasks
-        pool = AdaptiveResourcePool(global_limit=max_concurrent)
+        pool = AdaptiveResourcePool(
+            global_limit=max_concurrent,
+            group_limits={"approval_gate": 9999},
+        )
 
         # Build executors — register available executors.
         # DockerExecExecutor requires a container_id and is not registered here;
@@ -196,10 +201,15 @@ class ScanAPI:
             pipeline=pipeline,
         )
 
+        # Wire HITL approval gate support
+        approval_registry = ApprovalRegistry()
+        engine.set_approval_registry(approval_registry)
+
         _active_scans[scan.id] = {
             "scan": scan,
             "cancel": cancel,
             "engine": engine,
+            "approval_registry": approval_registry,
         }
 
         try:
