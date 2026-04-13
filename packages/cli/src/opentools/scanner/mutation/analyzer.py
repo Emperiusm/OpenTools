@@ -135,9 +135,9 @@ class NucleiAnalyzer:
             info = obj.get("info", {})
             severity = info.get("severity", "unknown") if isinstance(info, dict) else "unknown"
 
-            extracted_results = obj.get("extracted-results", [])
+            extracted_results = obj.get("extracted-results")
             extracted_data: dict = {}
-            if extracted_results:
+            if isinstance(extracted_results, list) and extracted_results:
                 extracted_data["extracted_results"] = extracted_results
 
             vulns.append(

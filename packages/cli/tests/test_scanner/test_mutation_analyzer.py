@@ -260,6 +260,18 @@ class TestNucleiAnalyzer:
         bundle = self.analyzer.analyze(NUCLEI_TWO_VULNS, "")
         assert bundle.services == []
 
+    def test_extracted_results_string_ignored(self):
+        line = '{"template-id":"test-str","host":"h","matched-at":"http://h","info":{"severity":"low"},"extracted-results":"single string"}'
+        bundle = self.analyzer.analyze(line, "")
+        assert len(bundle.vulns) == 1
+        assert "extracted_results" not in bundle.vulns[0].extracted_data
+
+    def test_extracted_results_null_ignored(self):
+        line = '{"template-id":"test-null","host":"h","matched-at":"http://h","info":{"severity":"low"},"extracted-results":null}'
+        bundle = self.analyzer.analyze(line, "")
+        assert len(bundle.vulns) == 1
+        assert "extracted_results" not in bundle.vulns[0].extracted_data
+
 
 # ---------------------------------------------------------------------------
 # TestAnalyzerRegistry
