@@ -89,6 +89,13 @@ class LocationPrecision(StrEnum):
     HOST = "host"
 
 
+class SteeringAction(StrEnum):
+    CONTINUE = "continue"
+    ADD_TASKS = "add_tasks"
+    PAUSE = "pause"
+    ABORT = "abort"
+
+
 # ---------------------------------------------------------------------------
 # Core configuration models
 # ---------------------------------------------------------------------------
@@ -162,6 +169,20 @@ class ScanMetrics(BaseModel):
     docker_execs: int = 0
     total_duration_ms: int = 0
     tool_errors: int = 0
+
+
+class GraphSnapshot(BaseModel):
+    """A snapshot of the task graph state for steering decisions."""
+
+    tasks_total: int = 0
+    tasks_completed: int = 0
+    tasks_running: int = 0
+    tasks_pending: int = 0
+    tasks_failed: int = 0
+    tasks_skipped: int = 0
+    phases_completed: list[str] = Field(default_factory=list)
+    current_phase: Optional[str] = None
+    finding_count: int = 0
 
 
 class ReactiveEdge(BaseModel):
