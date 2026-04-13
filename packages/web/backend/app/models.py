@@ -473,3 +473,19 @@ class ChainFindingParserOutput(SQLModel, table=True):
     user_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="user.id", index=True, nullable=True
     )
+
+
+class ChainCalibrationState(SQLModel, table=True):
+    """Per-rule Bayesian calibration state for a user."""
+    __tablename__ = "chain_calibration_state"
+    id: str = Field(primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="user.id", index=True)
+    rule: str = Field(index=True)
+    alpha: float = Field(default=1.0)
+    beta_param: float = Field(default=1.0)
+    observations: int = Field(default=0)
+    last_calibrated_at: datetime = Field(**_TZ_KW)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "rule", name="uq_calibration_state"),
+    )
