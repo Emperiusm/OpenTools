@@ -309,7 +309,7 @@ async def update_relation(
     valid_statuses = {"user_confirmed", "user_rejected"}
     if body.status not in valid_statuses:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"status must be one of: {', '.join(valid_statuses)}",
         )
 
