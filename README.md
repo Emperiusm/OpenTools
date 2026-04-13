@@ -9,6 +9,9 @@
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#skills">Skills</a> &bull;
   <a href="#cli">CLI</a> &bull;
+  <a href="#scanner">Scanner</a> &bull;
+  <a href="#attack-chains">Attack Chains</a> &bull;
+  <a href="#web-dashboard">Web Dashboard</a> &bull;
   <a href="#architecture">Architecture</a> &bull;
   <a href="#tools">Tools</a> &bull;
   <a href="#recipes">Recipes</a> &bull;
@@ -18,12 +21,12 @@
 </p>
 
 <p align="center">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-153%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-1157%20passing-brightgreen">
   <img alt="Skills" src="https://img.shields.io/badge/skills-6-blue">
   <img alt="Tools" src="https://img.shields.io/badge/tools-50%2B-orange">
-  <img alt="Lines" src="https://img.shields.io/badge/lines-7K%20Python-yellow">
+  <img alt="Lines" src="https://img.shields.io/badge/lines-30K%20Python%20%7C%201.7K%20TypeScript-yellow">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4">
-  <img alt="PRs" src="https://img.shields.io/badge/PRs-5%20merged-purple">
+  <img alt="PRs" src="https://img.shields.io/badge/PRs-9%20merged-purple">
 </p>
 
 ---
@@ -37,10 +40,13 @@ Security assessments involve dozens of tools with different output formats, conf
 | **Tool management** | Manual install, remember flags | `opentools preflight --skill pentest` verifies everything |
 | **Engagement state** | Scattered notes, spreadsheets | SQLite-backed store with FTS search, IOC tracking, timeline |
 | **Finding dedup** | Manual cross-referencing | Automatic CWE inference + location-based dedup across tools |
+| **Scanning** | One tool at a time, manual config | `opentools scan run --profile source_full` — DAG-orchestrated multi-tool pipeline |
+| **Attack chains** | Mental model in your head | Automated entity extraction, relation linking, path queries |
 | **Reporting** | Copy-paste from 10 tools | `opentools report generate` with Jinja2 templates |
 | **Methodology** | Checklist in your head | AI-guided skills with OWASP v4.2, MITRE ATT&CK coverage |
 | **Workflows** | Custom scripts per engagement | Reusable recipes with async parallel execution |
 | **CI/CD integration** | Tool-specific adapters | `opentools findings export --format sarif` (universal) |
+| **Web dashboard** | Spreadsheets or custom apps | Full-stack Vue 3 + FastAPI dashboard with JWT auth |
 | **Docker containers** | `docker compose up` + pray | `opentools containers start --profile pentest` with readiness polling |
 
 ---
@@ -89,6 +95,23 @@ opentools findings search "injection"
 # Export for reporting
 opentools findings export my-audit --format sarif --output results.sarif
 opentools report generate my-audit --template pentest-report
+```
+
+### Run a Multi-Tool Scan
+
+```bash
+# List available profiles
+opentools scan profiles
+
+# Dry-run to see the execution plan
+opentools scan plan --target ./my-app --profile source_full
+
+# Execute the scan
+opentools scan run --target ./my-app --profile source_full
+
+# Check status, view findings
+opentools scan status <scan-id>
+opentools scan findings <scan-id>
 ```
 
 ### Use with Claude Code
@@ -206,9 +229,27 @@ opentools
 │   └── templates                            # List available templates
 │
 ├── iocs
-│   ├── list <engagement> [--type X]         # List IOCs
-│   ├── export <engagement> --format F       # CSV, JSON, or STIX 2.1
-│   └── search <value>                       # Cross-engagement IOC search
+│   ├── correlate <value>                    # Cross-engagement IOC correlation
+│   ├── trending [--limit N] [--days N]      # Top trending IOCs
+│   ├── enrich <value> --type T              # Fetch from enrichment providers
+│   └── export <engagement> --format F       # CSV, JSON, or STIX 2.1
+│
+├── scan
+│   ├── profiles                             # List available scan profiles
+│   ├── plan --target T --profile P          # Show execution plan (dry-run)
+│   ├── run --target T --profile P           # Plan and execute a scan
+│   ├── status <scan-id>                     # Show scan progress
+│   ├── history                              # List past scans
+│   ├── findings <scan-id>                   # Show scan findings
+│   └── cancel <scan-id>                     # Cancel a running scan
+│
+├── chain
+│   ├── status                               # Entity/relation counts, last linker run
+│   ├── rebuild <engagement>                 # Re-run extraction + linking
+│   ├── entities [--type T]                  # List entities
+│   ├── path --from X --to Y                 # K-shortest path query
+│   ├── query <preset>                       # Run a named preset query
+│   └── export <engagement>                  # Export chain data
 │
 ├── config
 │   ├── show                                 # Print resolved config
@@ -250,53 +291,215 @@ Findings export to [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/
 
 ---
 
+## Scanner
+
+The scan orchestration pipeline executes multi-tool security scans as a DAG (directed acyclic graph), with automatic finding normalization, deduplication, and correlation.
+
+### Scan Profiles
+
+Eight built-in YAML profiles for common scenarios:
+
+| Profile | Tools | Use Case |
+|---------|-------|----------|
+| `source_quick` | Semgrep, Gitleaks | Fast source code sweep |
+| `source_full` | Semgrep, Gitleaks, Trivy | Comprehensive source audit |
+| `web_quick` | Nuclei, Nikto | Quick web app scan |
+| `web_full` | Nuclei, Nikto, ffuf, SQLMap | Full web app assessment |
+| `network_recon` | Nmap, Masscan | Network reconnaissance |
+| `container_audit` | Trivy | Container image audit |
+| `binary_triage` | Capa, YARA, Binwalk | Binary analysis triage |
+| `apk_analysis` | JADX, Gitleaks | Android APK analysis |
+
+### Pipeline Architecture
+
+```
+Target → TargetDetector → ScanPlanner → ScanEngine → Parsers → Pipeline → Store
+           │                  │              │           │          │
+           │ detect type      │ build DAG    │ execute   │ parse    │ normalize
+           │ validate         │ from profile │ tasks     │ output   │ deduplicate
+           │                  │ add edges    │ stream    │          │ correlate
+           │                  │              │ events    │          │ score
+```
+
+- **Executors** — Shell, Docker, MCP server (connection-pooled)
+- **DAG engine** — dependency-aware task dispatch with reactive edges (one tool's output triggers another)
+- **Normalization** — paths, CWEs, severities, titles standardized across tools
+- **Deduplication** — strict hash + fuzzy multi-pass matching across tools
+- **Correlation** — cross-finding relation detection, remediation grouping
+- **Confidence scoring** — corroboration from multiple tools boosts confidence, time decay reduces it
+
+---
+
+## Attack Chains
+
+The chain subsystem extracts security entities (hosts, CVEs, credentials, malware, etc.) from findings and links them into attack graphs for path analysis.
+
+### Entity Extraction
+
+- **Regex-based** — IPs, domains, CVEs, hashes, emails, URLs extracted via security-aware patterns
+- **Parser-aware** — tool-specific extractors (semgrep, nmap, trivy) add structured context
+- **LLM-assisted** — optional Anthropic/OpenAI/Ollama pass for entity classification and relation inference
+
+### Link Analysis
+
+- **Rule-based linker** — cross-engagement IOC matching, CVE adjacency, MITRE ATT&CK chaining
+- **Graph queries** — k-shortest path between any two entities (powered by rustworkx)
+- **Preset queries** — `crown_jewel`, `lateral_movement`, `priv_esc_chains`, `external_to_internal`, `mitre_coverage`
+- **Export** — chain data exportable as JSON for downstream tooling
+
+### Async Store Protocol
+
+Chain data is persisted via `ChainStoreProtocol` with pluggable async backends:
+
+- **aiosqlite** — local single-user CLI usage
+- **PostgreSQL (SQLAlchemy)** — multi-user web dashboard
+
+---
+
+## Web Dashboard
+
+A full-stack web interface for multi-user engagement management, built on FastAPI and Vue 3.
+
+### Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | Vue 3.5, TypeScript 5.7, Vite 6, PrimeVue 4 |
+| **State** | Pinia 3, TanStack Vue Query 5 |
+| **Charts** | Chart.js 4.5 + vue-chartjs |
+| **Backend** | FastAPI, SQLAlchemy, Alembic migrations |
+| **Auth** | fastapi-users with JWT |
+| **Database** | PostgreSQL |
+
+### API Routes
+
+```
+/api/v1/auth/           Authentication (register, login, JWT)
+/api/v1/engagements/    Engagement CRUD
+/api/v1/findings/       Finding management
+/api/v1/iocs/           IOC correlation and enrichment
+/api/v1/containers/     Docker container management
+/api/v1/recipes/        Workflow execution
+/api/v1/reports/        Report generation
+/api/v1/exports/        Data export
+/api/v1/correlation/    Threat correlation
+/api/v1/chain/          Attack chain analysis
+/api/v1/scans/          Scan orchestration (CRUD, control, SSE streaming)
+/api/v1/system/         System info and health
+```
+
+### Quick Start
+
+```bash
+cd packages/web
+cp .env.example .env
+# Edit .env with your POSTGRES_PASSWORD and SECRET_KEY
+
+# Build frontend
+cd frontend && npm install && npm run build && cd ..
+
+# Start services
+docker compose up -d
+# Dashboard: http://localhost
+# API docs: http://localhost:8000/docs
+```
+
+### Development
+
+```bash
+# Terminal 1: API with hot-reload
+make dev-api
+
+# Terminal 2: Frontend with HMR
+make dev-ui
+
+# Run tests
+make test
+```
+
+---
+
+## TUI Dashboard
+
+An interactive terminal dashboard for local engagement management (requires `pip install opentools[dashboard]`).
+
+- **Collapsible sidebar** — engagement list with summary stats
+- **Tabbed content** — findings, IOCs, containers, timeline views
+- **Finding detail modal** — full evidence and remediation view
+- **Interactive CRUD** — create engagements, add findings/IOCs, delete entries
+- **Recipe runner** — per-step progress via async generator
+- **Bulk actions** — checkbox multi-select (Space, Ctrl+A, Ctrl+D)
+- **Lazy data fetching** — only queries the visible tab
+- **Auto-refresh** — configurable polling interval
+
+```bash
+opentools dashboard --engagement my-audit
+```
+
+---
+
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Claude Code Skills (packages/plugin/)                   │
-│                                                          │
-│  ┌────────┐ ┌────┐ ┌───────┐ ┌─────┐ ┌─────┐ ┌──────┐  │
-│  │pentest │ │ RE │ │hw-re  │ │forsc│ │cloud│ │mobile│  │
-│  └───┬────┘ └──┬─┘ └───┬───┘ └──┬──┘ └──┬──┘ └──┬───┘  │
-│      └─────────┴───────┴────────┴───────┴───────┘       │
-│                        │ invoke                          │
-│                opentools <cmd> --json                    │
-│                        │ stdout JSON                     │
-└────────────────────────┼─────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Claude Code Skills (packages/plugin/)                           │
+│                                                                  │
+│  ┌────────┐ ┌────┐ ┌───────┐ ┌─────┐ ┌─────┐ ┌──────┐          │
+│  │pentest │ │ RE │ │hw-re  │ │forsc│ │cloud│ │mobile│          │
+│  └───┬────┘ └──┬─┘ └───┬───┘ └──┬──┘ └──┬──┘ └──┬───┘          │
+│      └─────────┴───────┴────────┴───────┴───────┘               │
+│                        │ invoke                                  │
+│                opentools <cmd> --json                            │
+│                        │ stdout JSON                             │
+└────────────────────────┼─────────────────────────────────────────┘
                          ▼
-┌──────────────────────────────────────────────────────────┐
-│  CLI Toolkit (packages/cli/)                             │
-│                                                          │
-│  cli.py ──── typer commands (40+ subcommands)            │
-│    │                                                     │
-│    ├── config.py ◄── tools.yaml, mcp-servers.yaml        │
-│    ├── preflight.py ── health checks per skill           │
-│    ├── containers.py ── docker compose lifecycle         │
-│    ├── recipes.py ── asyncio DAG executor                │
-│    ├── findings.py ── CWE inference + dedup + SARIF      │
-│    ├── reports.py ── Jinja2 template rendering           │
-│    └── parsers/ ── semgrep, nuclei, trivy, gitleaks, capa│
-│                                                          │
-│    engagement/                                           │
-│      store.py ◄──► SQLite (WAL, FTS5, migrations)        │
-│      export.py ── JSON export/import                     │
-│                                                          │
-│  models.py ─── 29 Pydantic models, 10 enums             │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  CLI Toolkit (packages/cli/)                                     │
+│                                                                  │
+│  cli.py ──── typer commands (60+ subcommands)                    │
+│    │                                                             │
+│    ├── engagement/ ── SQLite store (WAL, FTS5, migrations)       │
+│    ├── scanner/                                                  │
+│    │   ├── engine.py ──── DAG task executor                      │
+│    │   ├── planner.py ── profile → task graph builder            │
+│    │   ├── pipeline.py ── normalize → dedup → correlate          │
+│    │   ├── parsing/ ── semgrep, gitleaks, trivy, nmap, generic   │
+│    │   ├── executor/ ── shell, docker, MCP                       │
+│    │   └── store.py ── scan-specific SQLite store                │
+│    ├── chain/                                                    │
+│    │   ├── extractors/ ── regex, parser-aware, LLM              │
+│    │   ├── linker/ ── rule engine, LLM pass, graph cache         │
+│    │   ├── query/ ── path queries, presets, graph cache          │
+│    │   └── stores/ ── async SQLite, async PostgreSQL             │
+│    ├── correlation/ ── cross-engagement IOC engine               │
+│    ├── dashboard/ ── Textual TUI (optional)                      │
+│    ├── recipes.py ── asyncio DAG executor                        │
+│    ├── findings.py ── CWE inference + dedup + SARIF              │
+│    ├── stix_export.py ── STIX 2.1 bundle builder                │
+│    └── shared/ ── subprocess, retry, resource pool, event bus    │
+│                                                                  │
+│  models.py ─── 29+ Pydantic models, 10+ enums                   │
+└──────────────────────────────────────────────────────────────────┘
                          ▼
-┌──────────────────────────────────────────────────────────┐
-│  Security Tools                                          │
-│                                                          │
-│  MCP Servers:  codebadger, arkana, ghydramcp, cyberchef  │
-│                semgrep-mcp, nmap-mcp, wazuh-mcp, ...     │
-│                                                          │
-│  Docker:       nuclei, sqlmap, ffuf, nikto, hashcat,     │
-│                masscan, binwalk, radare2, capa, yara, ...│
-│                                                          │
-│  CLI:          jadx, ILSpy, retdec, webcrack, synchrony, │
-│                frida, volatility3, sliver, theHarvester   │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Web Dashboard (packages/web/)                                   │
+│                                                                  │
+│  backend/  ── FastAPI + SQLAlchemy + Alembic + JWT auth          │
+│  frontend/ ── Vue 3 + TypeScript + PrimeVue + Chart.js           │
+└──────────────────────────────────────────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Security Tools                                                  │
+│                                                                  │
+│  MCP Servers:  codebadger, arkana, ghydramcp, cyberchef          │
+│                semgrep-mcp, nmap-mcp, wazuh-mcp, ...             │
+│                                                                  │
+│  Docker:       nuclei, sqlmap, ffuf, nikto, hashcat,             │
+│                masscan, binwalk, radare2, capa, yara, ...        │
+│                                                                  │
+│  CLI:          jadx, ILSpy, retdec, webcrack, synchrony,         │
+│                frida, volatility3, sliver, theHarvester           │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Package Map
@@ -304,9 +507,12 @@ Findings export to [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/
 | Package | Purpose | Key Files |
 |---|---|---|
 | `packages/plugin/` | Claude Code plugin — AI knowledge layer | 6 SKILL.md files, 9 commands, 5 recipes, YAML config |
-| `packages/cli/` | Python CLI — deterministic orchestration | 12 modules, 91 tests, typer entry point |
+| `packages/cli/` | Python CLI — deterministic orchestration | 120+ modules, 1090+ tests, typer entry point |
+| `packages/web/backend/` | FastAPI web API — multi-user dashboard | SQLAlchemy models, 11 route modules, Alembic migrations |
+| `packages/web/frontend/` | Vue 3 SPA — browser dashboard | PrimeVue components, Pinia stores, Chart.js visualizations |
 | `docs/specs/` | Design specifications | Architecture decisions, data models, API contracts |
 | `docs/plans/` | Implementation plans | Task breakdowns with TDD steps |
+| `scripts/` | Profiling and benchmarking | cProfile, load testing, scan engine profiler |
 | `engagements/` | Runtime data (gitignored) | SQLite DB, artifact files, reports |
 
 ---
@@ -457,77 +663,70 @@ opentools config show        # Print fully resolved config
 ```bash
 git clone https://github.com/Emperiusm/OpenTools.git
 cd OpenTools/packages/cli
-uv pip install -e .
-pip install pytest
-python -m pytest tests/ -v    # Run all 91 tests
+uv pip install -e ".[dev]"
+python -m pytest tests/ -v
 ```
 
 ### Project Stats
 
 ```
-2 packages | 52 source files | 153 tests | 7K lines of Python | 5 PRs merged
+3 packages | 220+ source files | 1,150+ tests | 30K Python + 1.7K TypeScript | 9 PRs merged
 ```
 
 ### Tech Stack
 
+**CLI (Python)**
+
 | Dependency | Purpose |
 |-----------|---------|
 | typer | CLI framework (type-hint-driven) |
-| pydantic | Data models + validation (29 models) |
+| pydantic | Data models + validation |
 | rich | Terminal output (tables, colors) |
+| textual | TUI dashboard (optional) |
+| sqlalchemy + aiosqlite | Async SQLite persistence |
+| rustworkx | Graph algorithms (chain path queries) |
+| httpx | Async HTTP client |
+| orjson | Fast JSON serialization |
 | ruamel.yaml | YAML loading (preserves comments) |
-| sqlite-utils | SQLite access (WAL, FTS5) |
 | jinja2 | Report template rendering |
+| tldextract | Domain parsing for IOC extraction |
+| aiolimiter | Async rate limiting |
+| tenacity | Retry with exponential backoff |
+
+**Web Backend (Python)**
+
+| Dependency | Purpose |
+|-----------|---------|
+| fastapi | Async web framework |
+| sqlalchemy | ORM + PostgreSQL |
+| alembic | Database migrations |
+| fastapi-users | JWT authentication |
+
+**Web Frontend (TypeScript)**
+
+| Dependency | Purpose |
+|-----------|---------|
+| vue 3.5 | Reactive UI framework |
+| vite 6 | Build tool + HMR |
+| primevue 4 | Component library |
+| pinia 3 | State management |
+| tanstack vue-query 5 | Server state + caching |
+| chart.js + vue-chartjs | Data visualizations |
 
 ### Output Parsers
 
 Adding a parser for a new tool is one file:
 
 ```python
-# packages/cli/src/opentools/parsers/my_tool.py
-from opentools.models import Finding, Severity
+# packages/cli/src/opentools/scanner/parsing/parsers/my_tool.py
+from opentools.scanner.models import ScanFinding, Severity
 
-def parse(raw_output: str) -> list[Finding]:
-    """Parse my_tool JSON output into Finding models."""
-    # ... parse raw_output, return list of Finding objects
+def parse(raw_output: str, tool_name: str) -> list[ScanFinding]:
+    """Parse my_tool output into ScanFinding models."""
+    # ... parse raw_output, return list of ScanFinding objects
 ```
 
-The registry auto-discovers parser modules — no registration needed.
-
----
-
-## Web Dashboard
-
-A full-stack web interface for multi-user engagement management.
-
-### Quick Start
-
-```bash
-cd packages/web
-cp .env.example .env
-# Edit .env with your POSTGRES_PASSWORD and SECRET_KEY
-
-# Build frontend
-cd frontend && npm install && npm run build && cd ..
-
-# Start services
-docker compose up -d
-# Dashboard: http://localhost
-# API docs: http://localhost:8000/docs
-```
-
-### Development
-
-```bash
-# Terminal 1: API with hot-reload
-make dev-api
-
-# Terminal 2: Frontend with HMR
-make dev-ui
-
-# Run tests
-make test
-```
+The parser router auto-discovers parser modules — no registration needed.
 
 ---
 
@@ -564,12 +763,24 @@ make test
 - [x] Bulk finding actions with checkbox multi-select (Space, Ctrl+A, Ctrl+D)
 - [x] FormField and CheckboxTable reusable widgets
 
-### Phase 3 (Current)
+### Phase 3
 
-- [ ] Web dashboard (FastAPI + HTMX) for multi-engagement management
-- [ ] Team collaboration — shared engagements, finding assignment
-- [ ] Attack chain visualization (linked findings → narrative)
-- [ ] Cross-engagement IOC correlation and trending
+- [x] Web dashboard (FastAPI + Vue 3) for multi-engagement management
+- [x] JWT authentication with fastapi-users
+- [x] Cross-engagement IOC correlation, trending, and enrichment
+- [x] Attack chain extraction — entity detection, relation linking, graph path queries
+- [x] Async store protocol — ChainStoreProtocol with SQLite and PostgreSQL backends
+- [x] Scan runner pipeline — DAG engine, 8 profiles, 5 parsers, normalization, dedup, correlation
+- [x] CLI scan commands — plan, run, status, history, findings, cancel
+- [x] Web scan API with SSE streaming
+- [x] Performance optimization pass — batch DB writes, lazy fetching, reverse indexes, singleton stores
+
+### Phase 4 (Planned)
+
+- [ ] Attack chain visualization (linked findings → narrative graph)
+- [ ] Team collaboration — shared engagements, finding assignment, comments
+- [ ] Bayesian confidence calibration for finding scoring
+- [ ] Cypher-style DSL for chain queries
 - [ ] Plugin marketplace integration
 
 ---
