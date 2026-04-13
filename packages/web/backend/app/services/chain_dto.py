@@ -89,6 +89,39 @@ def relations_to_list(relations: list[FindingRelation]) -> list[dict[str, Any]]:
     return [relation_to_dict(r) for r in relations]
 
 
+def relation_to_link_dict(relation: FindingRelation) -> dict[str, Any]:
+    """Convert a CLI ``FindingRelation`` to a force-graph link dict.
+
+    Includes drift detection: if the relation has status USER_CONFIRMED
+    and the current reasons differ from the confirmed_at_reasons snapshot,
+    drift is True.
+    """
+    status_value = (
+        relation.status.value
+        if hasattr(relation.status, "value")
+        else str(relation.status)
+    )
+
+    # Drift: true if user confirmed but reasons have since changed
+    drift = False
+    if status_value == "user_confirmed" and relation.confirmed_at_reasons is not None:
+        current_rules = sorted(r.rule for r in relation.reasons)
+        confirmed_rules = sorted(r.rule for r in relation.confirmed_at_reasons)
+        drift = current_rules != confirmed_rules
+
+    return {
+        "id": relation.id,
+        "source": relation.source_finding_id,
+        "target": relation.target_finding_id,
+        "value": relation.weight,
+        "status": status_value,
+        "drift": drift,
+        "reasons": [r.rule for r in relation.reasons],
+        "relation_type": relation.llm_relation_type,
+        "rationale": relation.llm_rationale,
+    }
+
+
 def linker_run_to_dict(run: LinkerRun) -> dict[str, Any]:
     """Convert a CLI ``LinkerRun`` to a web response dict.
 
