@@ -48,7 +48,7 @@ class TestDiscoveredService:
         svc = DiscoveredService(host="10.0.0.1", port=53, protocol="udp", service="dns")
         assert svc.protocol == "udp"
 
-    def test_immutable_model(self):
+    def test_round_trip_serialization(self):
         """Pydantic v2 models are mutable by default; just verify round-trip works."""
         svc = DiscoveredService(host="1.2.3.4", port=443, protocol="tcp", service="https")
         data = svc.model_dump()
@@ -217,7 +217,7 @@ class TestKillChainState:
             matched_at="http://10.0.0.1/",
         )
         state.ingest(IntelBundle(vulns=[vuln]))
-        assert "10.0.0.1:xss-reflected" in state.vulns
+        assert "10.0.0.1:80:xss-reflected" in state.vulns
 
     def test_ingest_deduplicates_vulns(self):
         state = KillChainState()
@@ -238,7 +238,51 @@ class TestKillChainState:
         state.ingest(IntelBundle(vulns=[vuln1]))
         state.ingest(IntelBundle(vulns=[vuln2]))
         assert len(state.vulns) == 1
-        assert state.vulns["10.0.0.1:sqli"].matched_at == "http://10.0.0.1/b"
+        assert state.vulns["10.0.0.1:80:sqli"].matched_at == "http://10.0.0.1/b"
+
+    def test_ingest_vulns_multi_port_no_collision(self):
+        """Same template on different ports must produce distinct entries, not overwrite."""
+        state = KillChainState()
+        vuln_80 = DiscoveredVuln(
+            host="10.0.0.1",
+            port=80,
+            template_id="http-open-redirect",
+            severity="medium",
+            matched_at="http://10.0.0.1/",
+        )
+        vuln_8080 = DiscoveredVuln(
+            host="10.0.0.1",
+            port=8080,
+            template_id="http-open-redirect",
+            severity="medium",
+            matched_at="http://10.0.0.1:8080/",
+        )
+        state.ingest(IntelBundle(vulns=[vuln_80, vuln_8080]))
+        assert len(state.vulns) == 2
+        assert "10.0.0.1:80:http-open-redirect" in state.vulns
+        assert "10.0.0.1:8080:http-open-redirect" in state.vulns
+
+    def test_ingest_vuln_no_port_key(self):
+        """Vulns with port=None must use 'noport' in the key and not collide with port-bearing vulns."""
+        state = KillChainState()
+        vuln_no_port = DiscoveredVuln(
+            host="10.0.0.1",
+            port=None,
+            template_id="generic-check",
+            severity="info",
+            matched_at="http://10.0.0.1/",
+        )
+        vuln_with_port = DiscoveredVuln(
+            host="10.0.0.1",
+            port=80,
+            template_id="generic-check",
+            severity="info",
+            matched_at="http://10.0.0.1/",
+        )
+        state.ingest(IntelBundle(vulns=[vuln_no_port, vuln_with_port]))
+        assert len(state.vulns) == 2
+        assert "10.0.0.1:noport:generic-check" in state.vulns
+        assert "10.0.0.1:80:generic-check" in state.vulns
 
     def test_ingest_urls(self):
         state = KillChainState()

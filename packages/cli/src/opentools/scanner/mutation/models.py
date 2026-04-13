@@ -1,6 +1,8 @@
 """Data models for kill-chain state accumulation and per-task intel extraction."""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -24,7 +26,7 @@ class DiscoveredVuln(BaseModel):
     template_id: str
     severity: str
     matched_at: str
-    extracted_data: dict = Field(default_factory=dict)
+    extracted_data: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntelBundle(BaseModel):
@@ -33,7 +35,7 @@ class IntelBundle(BaseModel):
     services: list[DiscoveredService] = Field(default_factory=list)
     vulns: list[DiscoveredVuln] = Field(default_factory=list)
     urls: list[str] = Field(default_factory=list)
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class KillChainState(BaseModel):
@@ -50,7 +52,8 @@ class KillChainState(BaseModel):
             key = f"{svc.host}:{svc.port}/{svc.protocol}"
             self.services[key] = svc
         for vuln in bundle.vulns:
-            key = f"{vuln.host}:{vuln.template_id}"
+            port_part = str(vuln.port) if vuln.port is not None else "noport"
+            key = f"{vuln.host}:{port_part}:{vuln.template_id}"
             self.vulns[key] = vuln
         self.urls.update(bundle.urls)
 
