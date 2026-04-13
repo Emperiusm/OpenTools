@@ -55,30 +55,35 @@ class DedupEngine:
         groups: list[list[int]] = []
         matched: set[int] = set()
 
-        # --- Pass 1: Strict fingerprint match ---
-        # Build indexes
-        cwe_loc_idx: dict[str, list[int]] = defaultdict(list)
-        title_loc_idx: dict[str, list[int]] = defaultdict(list)
-        cwe_eh_idx: dict[str, list[int]] = defaultdict(list)
-        eh_idx: dict[str, list[int]] = defaultdict(list)
+        # --- Pass 1: Strict fingerprint match (single composite index) ---
+        buckets: dict[str, list[int]] = defaultdict(list)
+        eh_fallback: dict[str, list[int]] = defaultdict(list)
 
         for i, f in enumerate(findings):
+            # Priority-ordered: first matching key wins
             if f.cwe and f.location_fingerprint:
-                cwe_loc_idx[f"{f.cwe}:{f.location_fingerprint}"].append(i)
-            if f.canonical_title and f.location_fingerprint:
-                title_loc_idx[f"{f.canonical_title}:{f.location_fingerprint}"].append(i)
-            if f.cwe and f.evidence_hash:
-                cwe_eh_idx[f"{f.cwe}:{f.evidence_hash}"].append(i)
-            eh_idx[f.evidence_hash].append(i)
+                key = f"CL:{f.cwe}:{f.location_fingerprint}"
+            elif f.canonical_title and f.location_fingerprint:
+                key = f"TL:{f.canonical_title}:{f.location_fingerprint}"
+            elif f.cwe and f.evidence_hash:
+                key = f"CE:{f.cwe}:{f.evidence_hash}"
+            else:
+                key = f"EH:{f.evidence_hash}"
+            buckets[key].append(i)
+            # Always track by evidence_hash for the fallback sweep
+            eh_fallback[f.evidence_hash].append(i)
 
-        # Merge by each strict key, in priority order
-        for index in [cwe_loc_idx, title_loc_idx, cwe_eh_idx, eh_idx]:
-            for _key, indices in index.items():
-                # Filter to only unmatched
-                unmatched_in_group = [i for i in indices if i not in matched]
-                if len(unmatched_in_group) >= 2:
-                    groups.append(unmatched_in_group)
-                    matched.update(unmatched_in_group)
+        for indices in buckets.values():
+            if len(indices) >= 2:
+                groups.append(indices)
+                matched.update(indices)
+
+        # Evidence-hash catch-all: merge unmatched singletons sharing the same hash
+        for indices in eh_fallback.values():
+            unmatched_in_group = [i for i in indices if i not in matched]
+            if len(unmatched_in_group) >= 2:
+                groups.append(unmatched_in_group)
+                matched.update(unmatched_in_group)
 
         # --- Pass 2: Fuzzy match on remaining unmatched ---
         unmatched = [i for i in range(len(findings)) if i not in matched]
