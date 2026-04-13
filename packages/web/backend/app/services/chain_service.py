@@ -29,6 +29,7 @@ from app.services.chain_dto import (
     entities_to_list,
     entity_to_dict,
     linker_run_to_dict,
+    relation_to_link_dict,
     relations_to_list,
 )
 from app.services.chain_store_factory import chain_store_from_session
@@ -241,3 +242,209 @@ class ChainService:
         await store.initialize()
         run = await store.fetch_linker_run_by_id(run_id, user_id=user_id)
         return linker_run_to_dict(run) if run is not None else None
+
+    # ── Subgraph queries ────────────────────────────────────────────
+
+    async def subgraph_for_engagement(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        engagement_id: str,
+        severities: set[str] | None = None,
+        statuses: set[str] | None = None,
+        max_nodes: int = 500,
+        seed_finding_id: str | None = None,
+        hops: int = 2,
+        format: str = "force-graph",
+    ) -> dict[str, Any]:
+        """Build a filtered subgraph for one engagement.
+
+        Returns a dict with 'graph' (force-graph or canonical shape)
+        and 'meta' (total_findings, rendered_findings, filtered, generation).
+        """
+        from sqlalchemy import select, func
+        from app.models import Finding, ChainFindingRelation, ChainLinkerRun
+
+        store = chain_store_from_session(session)
+        await store.initialize()
+
+        # Count total findings in engagement (for meta)
+        total_stmt = select(func.count()).select_from(Finding).where(
+            Finding.engagement_id == engagement_id,
+            Finding.user_id == user_id,
+            Finding.deleted_at.is_(None),
+        )
+        total_result = await session.execute(total_stmt)
+        total_findings = total_result.scalar() or 0
+
+        # Fetch findings for this engagement, applying severity filter
+        finding_stmt = select(Finding).where(
+            Finding.engagement_id == engagement_id,
+            Finding.user_id == user_id,
+            Finding.deleted_at.is_(None),
+        )
+        if severities:
+            finding_stmt = finding_stmt.where(Finding.severity.in_(severities))
+        finding_stmt = finding_stmt.limit(max_nodes)
+
+        finding_result = await session.execute(finding_stmt)
+        findings = list(finding_result.scalars().all())
+        finding_ids = {f.id for f in findings}
+
+        if not finding_ids:
+            empty_graph = (
+                {"nodes": [], "links": []}
+                if format == "force-graph"
+                else {
+                    "schema_version": "1.0",
+                    "nodes": [],
+                    "edges": [],
+                    "metadata": {},
+                }
+            )
+            return {
+                "graph": empty_graph,
+                "meta": {
+                    "total_findings": total_findings,
+                    "rendered_findings": 0,
+                    "filtered": bool(severities) or total_findings > max_nodes,
+                    "generation": 0,
+                },
+            }
+
+        # Default status filter
+        if statuses is None:
+            statuses = {"auto_confirmed", "user_confirmed", "candidate"}
+
+        # Fetch relations where both endpoints are in finding_ids
+        rel_stmt = select(ChainFindingRelation).where(
+            ChainFindingRelation.user_id == user_id,
+            ChainFindingRelation.source_finding_id.in_(finding_ids),
+            ChainFindingRelation.target_finding_id.in_(finding_ids),
+            ChainFindingRelation.status.in_(statuses),
+        )
+        rel_result = await session.execute(rel_stmt)
+        relations_orm = list(rel_result.scalars().all())
+
+        # Build nodes
+        nodes = [
+            {
+                "id": f.id,
+                "name": f.title,
+                "severity": f.severity,
+                "tool": f.tool,
+                "phase": f.phase,
+            }
+            for f in findings
+        ]
+
+        # Build links via DTO
+        from opentools.chain.stores.postgres_async import _orm_to_relation
+
+        links = [
+            relation_to_link_dict(_orm_to_relation(r))
+            for r in relations_orm
+        ]
+
+        # Get latest generation from most recent linker run
+        gen_stmt = (
+            select(ChainLinkerRun.generation)
+            .where(ChainLinkerRun.user_id == user_id)
+            .order_by(ChainLinkerRun.started_at.desc())
+            .limit(1)
+        )
+        gen_result = await session.execute(gen_stmt)
+        generation = gen_result.scalar() or 0
+
+        if format == "force-graph":
+            graph = {"nodes": nodes, "links": links}
+        else:
+            graph = {
+                "schema_version": "1.0",
+                "nodes": [
+                    {
+                        "id": n["id"],
+                        "type": "finding",
+                        "severity": n["severity"],
+                        "tool": n["tool"],
+                        "title": n["name"],
+                    }
+                    for n in nodes
+                ],
+                "edges": [
+                    {
+                        "source": lnk["source"],
+                        "target": lnk["target"],
+                        "weight": lnk["value"],
+                        "status": lnk["status"],
+                        "symmetric": False,
+                        "reasons": lnk["reasons"],
+                        "relation_type": lnk["relation_type"],
+                        "rationale": lnk["rationale"],
+                    }
+                    for lnk in links
+                ],
+                "metadata": {
+                    "generation": generation,
+                    "max_weight": max(
+                        (lnk["value"] for lnk in links), default=0
+                    ),
+                },
+            }
+
+        return {
+            "graph": graph,
+            "meta": {
+                "total_findings": total_findings,
+                "rendered_findings": len(findings),
+                "filtered": bool(severities) or len(findings) < total_findings,
+                "generation": generation,
+            },
+        }
+
+    # ── Edge curation ───────────────────────────────────────────────
+
+    async def update_relation_status(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        relation_id: str,
+        new_status: str,
+    ) -> dict[str, Any] | None:
+        """Update a relation's status for edge curation.
+
+        Only 'user_confirmed' and 'user_rejected' are valid.
+        On confirm, snapshots current reasons_json into confirmed_at_reasons_json.
+        Returns the updated relation dict, or None if not found.
+        """
+        from sqlalchemy import select
+        from app.models import ChainFindingRelation
+        from datetime import datetime, timezone
+        from opentools.chain.stores.postgres_async import _orm_to_relation
+        from app.services.chain_dto import relation_to_dict
+
+        # Fetch the relation, scoped to user
+        stmt = select(ChainFindingRelation).where(
+            ChainFindingRelation.id == relation_id,
+            ChainFindingRelation.user_id == user_id,
+        )
+        result = await session.execute(stmt)
+        relation = result.scalar_one_or_none()
+        if relation is None:
+            return None
+
+        # Update status
+        relation.status = new_status
+        relation.updated_at = datetime.now(timezone.utc)
+
+        # On confirm, snapshot current reasons for drift detection
+        if new_status == "user_confirmed":
+            relation.confirmed_at_reasons_json = relation.reasons_json
+
+        session.add(relation)
+        await session.commit()
+        await session.refresh(relation)
+
+        return relation_to_dict(_orm_to_relation(relation))

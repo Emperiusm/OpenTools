@@ -111,13 +111,21 @@ function formatDate(dateStr: string) {
           {{ engagement.target }} &bull; {{ engagement.type }}
         </p>
       </div>
-      <Button
-        label="Delete"
-        icon="pi pi-trash"
-        severity="danger"
-        outlined
-        @click="deleteDialogVisible = true"
-      />
+      <div class="flex gap-2">
+        <Button
+          label="Attack Chain"
+          icon="pi pi-share-alt"
+          outlined
+          @click="router.push(`/engagements/${engId}/chain`)"
+        />
+        <Button
+          label="Delete"
+          icon="pi pi-trash"
+          severity="danger"
+          outlined
+          @click="deleteDialogVisible = true"
+        />
+      </div>
     </div>
 
     <!-- Severity summary strip -->

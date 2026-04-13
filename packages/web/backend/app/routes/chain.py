@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +81,22 @@ class RunStatusResponse(BaseModel):
     findings_processed: int
     relations_created: int
     error: Optional[str]
+
+
+class SubgraphMeta(BaseModel):
+    total_findings: int
+    rendered_findings: int
+    filtered: bool
+    generation: int
+
+
+class SubgraphResponse(BaseModel):
+    graph: dict
+    meta: SubgraphMeta
+
+
+class RelationStatusUpdate(BaseModel):
+    status: str
 
 
 def get_chain_service() -> ChainService:
@@ -247,3 +263,59 @@ async def get_run_status(
         relations_created=run["relations_created"],
         error=run.get("error"),
     )
+
+
+@router.get("/subgraph", response_model=SubgraphResponse)
+async def get_subgraph(
+    engagement_id: str,
+    severity: Optional[str] = None,
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    max_nodes: int = 500,
+    seed_finding_id: Optional[str] = None,
+    hops: int = 2,
+    format: str = "force-graph",
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    service: ChainService = Depends(get_chain_service),
+) -> SubgraphResponse:
+    severities = set(severity.split(",")) if severity else None
+    statuses = set(status_filter.split(",")) if status_filter else None
+
+    result = await service.subgraph_for_engagement(
+        db,
+        user_id=user.id,
+        engagement_id=engagement_id,
+        severities=severities,
+        statuses=statuses,
+        max_nodes=max_nodes,
+        seed_finding_id=seed_finding_id,
+        hops=hops,
+        format=format,
+    )
+    return SubgraphResponse(
+        graph=result["graph"],
+        meta=SubgraphMeta(**result["meta"]),
+    )
+
+
+@router.patch("/relations/{relation_id}")
+async def update_relation(
+    relation_id: str,
+    body: RelationStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    service: ChainService = Depends(get_chain_service),
+):
+    valid_statuses = {"user_confirmed", "user_rejected"}
+    if body.status not in valid_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"status must be one of: {', '.join(valid_statuses)}",
+        )
+
+    result = await service.update_relation_status(
+        db, user_id=user.id, relation_id=relation_id, new_status=body.status,
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="relation not found")
+    return result
