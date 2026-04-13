@@ -67,6 +67,7 @@ class EngagementSidebar(Widget):
         self.state = state
         # Internal cache: all items before filtering
         self._all_items: list[tuple[Engagement, int, int]] = []
+        self._last_snapshot: tuple | None = None
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="Filter engagements…", id="sidebar-filter")
@@ -85,6 +86,15 @@ class EngagementSidebar(Widget):
                 summary_map[eng_id] = (critical, high)
         except Exception:
             pass
+
+        # Check if anything changed before triggering a layout reflow
+        snapshot = (
+            tuple(e.id for e in self.state.engagements),
+            tuple(summary_map.get(e.id, (0, 0)) for e in self.state.engagements),
+        )
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
 
         self._all_items = []
         for eng in self.state.engagements:

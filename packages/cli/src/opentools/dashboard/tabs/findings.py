@@ -46,6 +46,7 @@ class FindingsTab(Widget):
         super().__init__(**kwargs)
         self.state = state
         self._filter_text: str = ""
+        self._last_snapshot: tuple | None = None
 
     # ------------------------------------------------------------------
     # Compose
@@ -61,8 +62,22 @@ class FindingsTab(Widget):
     # Public API
     # ------------------------------------------------------------------
 
+    def _data_snapshot(self) -> tuple:
+        """Lightweight fingerprint of the current data. Cheap to compute."""
+        return (
+            len(self.state.findings),
+            self._filter_text,
+            tuple(f.id for f in self.state.findings[:5]),
+            tuple(f.id for f in self.state.findings[-5:]),
+        )
+
     def update_from_state(self) -> None:
         """Clear and rebuild the table from ``self.state.findings``."""
+        snapshot = self._data_snapshot()
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
+
         table = self.query_one("#findings-table", CheckboxTable)
         table.clear()
 

@@ -28,6 +28,7 @@ class IOCsTab(Widget):
         super().__init__(**kwargs)
         self.state = state
         self._filter_text: str = ""
+        self._last_snapshot: tuple | None = None
 
     # ------------------------------------------------------------------
     # Compose
@@ -43,8 +44,21 @@ class IOCsTab(Widget):
     # Public API
     # ------------------------------------------------------------------
 
+    def _data_snapshot(self) -> tuple:
+        return (
+            len(self.state.iocs),
+            self._filter_text,
+            self.state.iocs[0].id if self.state.iocs else None,
+            self.state.iocs[-1].id if self.state.iocs else None,
+        )
+
     def update_from_state(self) -> None:
         """Clear and rebuild the table from ``self.state.iocs``."""
+        snapshot = self._data_snapshot()
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
+
         table = self.query_one("#iocs-table", DataTable)
         table.clear()
 

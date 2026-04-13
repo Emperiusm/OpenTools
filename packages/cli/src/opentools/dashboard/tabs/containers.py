@@ -33,6 +33,7 @@ class ContainersTab(Widget):
     def __init__(self, state: DashboardState, **kwargs) -> None:
         super().__init__(**kwargs)
         self.state = state
+        self._last_snapshot: tuple | None = None
 
     # ------------------------------------------------------------------
     # Compose
@@ -47,8 +48,19 @@ class ContainersTab(Widget):
     # Public API
     # ------------------------------------------------------------------
 
+    def _data_snapshot(self) -> tuple:
+        return (
+            len(self.state.containers),
+            tuple((c.name, c.state) for c in self.state.containers),
+        )
+
     def update_from_state(self) -> None:
         """Clear and rebuild the table from ``self.state.containers``."""
+        snapshot = self._data_snapshot()
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
+
         table = self.query_one("#containers-table", DataTable)
         table.clear()
 
