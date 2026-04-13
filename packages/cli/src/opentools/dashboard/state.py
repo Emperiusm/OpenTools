@@ -46,6 +46,14 @@ class DashboardState:
         Live :class:`~opentools.models.ContainerStatus` list from Docker.
     """
 
+    # Map tab IDs to the data categories they need
+    _TAB_NEEDS: dict[str, set[str]] = {
+        "findings": {"summary", "findings"},
+        "timeline": {"summary", "timeline"},
+        "iocs": {"summary", "iocs"},
+        "containers": {"summary", "containers"},
+    }
+
     def __init__(
         self,
         store: EngagementStore,
@@ -77,8 +85,13 @@ class DashboardState:
         """Reload engagement list from the store."""
         self.engagements = self.store.list_all()
 
-    def refresh_selected(self) -> dict[str, Any]:
-        """Reload findings/timeline/IOCs/containers for the selected engagement.
+    def refresh_selected(self, needs: set[str] | None = None) -> dict[str, Any]:
+        """Reload data for the selected engagement.
+
+        Args:
+            needs: Set of data categories to fetch. Valid values:
+                   'summary', 'findings', 'timeline', 'iocs', 'containers'.
+                   If None, fetches everything (backward compatible).
 
         Returns a change-notification dict.  When the finding count increased
         since the last load the dict contains::
@@ -96,14 +109,27 @@ class DashboardState:
         if self.selected_id is None:
             return changes
 
+        if needs is None:
+            needs = {"summary", "findings", "timeline", "iocs", "containers"}
+
+        # summary is always fetched — it's cheap and every tab needs it
+        needs = needs | {"summary"}
+
         prev_finding_count = len(self.findings)
 
-        self.summary = self.store.get_summary(self.selected_id)
-        self.findings = self.store.get_findings(self.selected_id)
-        self.timeline = self.store.get_timeline(self.selected_id)
-        self.iocs = self.store.get_iocs(self.selected_id)
+        if "summary" in needs:
+            self.summary = self.store.get_summary(self.selected_id)
 
-        if self.container_mgr is not None:
+        if "findings" in needs:
+            self.findings = self.store.get_findings(self.selected_id)
+
+        if "timeline" in needs:
+            self.timeline = self.store.get_timeline(self.selected_id)
+
+        if "iocs" in needs:
+            self.iocs = self.store.get_iocs(self.selected_id)
+
+        if "containers" in needs and self.container_mgr is not None:
             self.containers = self.container_mgr.status()
 
         new_count = len(self.findings)

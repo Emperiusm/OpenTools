@@ -148,7 +148,14 @@ class DashboardApp(App):
 
     @work(thread=True)
     def _do_refresh(self) -> None:
-        changes = self.state.refresh_selected()
+        # Determine what data the visible tab needs
+        try:
+            active = self.query_one(TabbedContent).active
+        except Exception:
+            active = "findings"
+
+        needs = DashboardState._TAB_NEEDS.get(active, {"summary", "findings"})
+        changes = self.state.refresh_selected(needs=needs)
         self.call_from_thread(self._apply_refresh, changes)
 
     def _apply_refresh(self, changes: dict) -> None:
