@@ -1,0 +1,25 @@
+id: source-quick
+name: Source Quick Scan
+description: Fast static analysis of source code using semgrep and gitleaks
+target_types:
+  - source_code
+phases:
+  - name: static-analysis
+    parallel: true
+    tools:
+      - tool: semgrep
+        task_type: shell
+        command_template: "semgrep --config auto --json {target}"
+        parser: semgrep
+        priority: 30
+        tier: fast
+        resource_group: shell
+        preferred_output_format: json
+      - tool: gitleaks
+        task_type: shell
+        command_template: "gitleaks detect --source {target} --report-format json --report-path -"
+        parser: gitleaks
+        priority: 30
+        tier: fast
+        resource_group: shell
+        preferred_output_format: json

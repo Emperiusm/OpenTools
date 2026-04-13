@@ -101,7 +101,10 @@ class ClaudeCodeProvider:
         # Production path — only exercised in smoke tests (ENABLE_LLM_SMOKE_TESTS=1).
         # The exact message/content structure from claude_agent_sdk.query() may differ
         # across SDK versions; we iterate defensively and skip unrecognised shapes.
-        from claude_agent_sdk import query, ClaudeAgentOptions  # type: ignore[import]
+        try:
+            from claude_agent_sdk import query, ClaudeAgentOptions  # type: ignore[import]
+        except ImportError:
+            raise ImportError("Claude Code provider requires: pip install opentools[llm]") from None
 
         options = ClaudeAgentOptions(
             system_prompt="You are a security analyst producing precise, schema-valid JSON.",

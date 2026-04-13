@@ -1,0 +1,149 @@
+{
+  "_comment": "Regex patterns (case-insensitive) mapped to canonical finding titles. Patterns are matched in order; first match wins.",
+  "patterns": [
+    {
+      "regex": "sql.{0,20}inject",
+      "title": "SQL Injection"
+    },
+    {
+      "regex": "sqli\\b",
+      "title": "SQL Injection"
+    },
+    {
+      "regex": "hibernate.*inject|inject.*hibernate",
+      "title": "SQL Injection (Hibernate)"
+    },
+    {
+      "regex": "cross.site.scripting|\\bxss\\b",
+      "title": "Cross-Site Scripting (XSS)"
+    },
+    {
+      "regex": "stored.xss|persistent.xss|stored.cross.site",
+      "title": "Stored Cross-Site Scripting (XSS)"
+    },
+    {
+      "regex": "reflected.xss|reflected.cross.site",
+      "title": "Reflected Cross-Site Scripting (XSS)"
+    },
+    {
+      "regex": "dom.xss|dom.based.cross.site",
+      "title": "DOM-based Cross-Site Scripting (XSS)"
+    },
+    {
+      "regex": "os.command.inject|shell.inject",
+      "title": "OS Command Injection"
+    },
+    {
+      "regex": "command.inject",
+      "title": "Command Injection"
+    },
+    {
+      "regex": "path.traversal|directory.traversal",
+      "title": "Path Traversal"
+    },
+    {
+      "regex": "local.file.inclus|\\blfi\\b",
+      "title": "Local File Inclusion"
+    },
+    {
+      "regex": "remote.file.inclus|\\brfi\\b",
+      "title": "Remote File Inclusion"
+    },
+    {
+      "regex": "hard.?coded.?(credential|password|secret|key|token|api.?key)|embedded.?(credential|password|secret)",
+      "title": "Hardcoded Credentials"
+    },
+    {
+      "regex": "missing.content.security.policy|missing.csp|no.content.security.policy|content.security.policy.not.set",
+      "title": "Missing Content Security Policy (CSP)"
+    },
+    {
+      "regex": "weak.crypt|broken.crypt|insecure.crypt|weak.cipher|broken.cipher|insecure.cipher|\\bmd5\\b|\\bsha1\\b|\\bdes\\b|\\brc4\\b",
+      "title": "Weak Cryptographic Algorithm"
+    },
+    {
+      "regex": "open.redirect|url.redirect|unvalidated.redirect",
+      "title": "Open Redirect"
+    },
+    {
+      "regex": "server.side.request.forgery|\\bssrf\\b",
+      "title": "Server-Side Request Forgery (SSRF)"
+    },
+    {
+      "regex": "deserializ|unsafe.deserializ|insecure.deserializ",
+      "title": "Insecure Deserialization"
+    },
+    {
+      "regex": "cross.site.request.forgery|\\bcsrf\\b",
+      "title": "Cross-Site Request Forgery (CSRF)"
+    },
+    {
+      "regex": "xml.external.entity|\\bxxe\\b",
+      "title": "XML External Entity (XXE) Injection"
+    },
+    {
+      "regex": "stack.?based.buffer.overflow|stack.overflow|stack.smash",
+      "title": "Stack-based Buffer Overflow"
+    },
+    {
+      "regex": "heap.?based.buffer.overflow|heap.overflow",
+      "title": "Heap-based Buffer Overflow"
+    },
+    {
+      "regex": "buffer.overflow|out.of.bounds.write|out.of.bounds.read",
+      "title": "Buffer Overflow"
+    },
+    {
+      "regex": "use.after.free|\\buaf\\b",
+      "title": "Use After Free"
+    },
+    {
+      "regex": "double.free",
+      "title": "Double Free"
+    },
+    {
+      "regex": "null.pointer.deref|null.deref|null.pointer.exception|nullptr.deref",
+      "title": "NULL Pointer Dereference"
+    },
+    {
+      "regex": "integer.overflow|int.overflow|integer.wraparound",
+      "title": "Integer Overflow"
+    },
+    {
+      "regex": "format.string",
+      "title": "Format String Vulnerability"
+    },
+    {
+      "regex": "taint.flow|taint.propagat|tainted.data",
+      "title": "Taint Flow"
+    },
+    {
+      "regex": "uninitializ.variable|uninitializ.read|uninitializ.memory",
+      "title": "Use of Uninitialized Variable"
+    },
+    {
+      "regex": "race.condition|\\btoctou\\b|time.of.check|time.of.use",
+      "title": "Race Condition"
+    },
+    {
+      "regex": "unrestricted.file.upload|file.upload.*dangerous|malicious.file.upload|arbitrary.file.upload",
+      "title": "Unrestricted File Upload"
+    },
+    {
+      "regex": "missing.auth|no.auth|authentication.bypass|unauthenticated.access",
+      "title": "Missing Authentication"
+    },
+    {
+      "regex": "missing.encrypt|unencrypt|cleartext|plain.?text.transmiss",
+      "title": "Missing Encryption of Sensitive Data"
+    },
+    {
+      "regex": "expression.language.inject|el.inject|\\bognl\\b|\\bspel\\b",
+      "title": "Expression Language Injection"
+    },
+    {
+      "regex": "eval.inject|dynamic.code.exec|code.inject",
+      "title": "Code Injection"
+    }
+  ]
+}

@@ -68,6 +68,7 @@ class DrainWorker:
     """
     task: "asyncio.Task"
     queue: "asyncio.Queue"
+    _handlers: "list[tuple[str, object]]|None" = None
 
     async def wait_idle(self) -> None:
         """Pump pending emits and block until the queue is fully drained.
@@ -94,6 +95,12 @@ class DrainWorker:
             await self.task
         except asyncio.CancelledError:
             pass
+        # Unsubscribe handlers to prevent accumulation over process lifetime
+        if self._handlers:
+            bus = get_event_bus()
+            for event_name, handler in self._handlers:
+                bus.unsubscribe(event_name, handler)
+            self._handlers = None
 
 
 async def start_drain_worker(store, pipeline, engine) -> DrainWorker:
@@ -160,4 +167,10 @@ async def start_drain_worker(store, pipeline, engine) -> DrainWorker:
     bus.subscribe("finding.updated", _on_updated)
     bus.subscribe("finding.deleted", _on_deleted)
 
-    return DrainWorker(task=_drain_worker_task, queue=_drain_queue)
+    handlers = [
+        ("finding.created", _on_created),
+        ("finding.updated", _on_updated),
+        ("finding.deleted", _on_deleted),
+    ]
+
+    return DrainWorker(task=_drain_worker_task, queue=_drain_queue, _handlers=handlers)

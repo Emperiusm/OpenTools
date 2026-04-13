@@ -37,7 +37,7 @@ EXPECTED_METHODS = {
     # LinkerRun lifecycle (6)
     "start_linker_run", "set_run_status", "finish_linker_run",
     "mark_run_failed",
-    "current_linker_generation", "fetch_linker_runs",
+    "current_linker_generation", "fetch_linker_runs", "fetch_linker_run_by_id",
     # Extraction state + parser output (3)
     "get_extraction_hash", "upsert_extraction_state", "get_parser_output",
     # LLM caches (4)
@@ -57,8 +57,9 @@ def test_protocol_has_all_expected_methods():
     # bringing the total to 44. Phase 3C.1.5 follow-up: added
     # mark_run_failed so worker failure handlers can finalize a run row
     # through the protocol instead of a direct SQL UPDATE, bringing the
-    # total to 45.
-    assert len(EXPECTED_METHODS) == 45
+    # total to 45. Added fetch_linker_run_by_id for indexed point-lookup,
+    # bringing the total to 46.
+    assert len(EXPECTED_METHODS) == 46
     methods = _protocol_methods()
     missing = EXPECTED_METHODS - methods
     extra = methods - EXPECTED_METHODS

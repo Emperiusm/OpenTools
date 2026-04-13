@@ -34,6 +34,7 @@ audit_app = typer.Typer(name="audit", help="Audit trail")
 config_app = typer.Typer(name="config", help="Configuration")
 
 from opentools.chain.cli import app as chain_app  # noqa: E402
+from opentools.scanner.scan_cli import app as scan_app  # noqa: E402
 
 app.add_typer(engagement_app)
 app.add_typer(findings_app)
@@ -45,6 +46,7 @@ app.add_typer(report_app)
 app.add_typer(audit_app)
 app.add_typer(config_app)
 app.add_typer(chain_app)
+app.add_typer(scan_app)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +155,12 @@ def dashboard(
     engagement: str = typer.Option(None, help="Auto-select engagement on launch"),
 ):
     """Launch the interactive TUI dashboard."""
-    from opentools.dashboard import launch_dashboard as _launch_dash
+    try:
+        from opentools.dashboard import launch_dashboard as _launch_dash
+    except ImportError:
+        import typer as _t
+        _t.echo("Dashboard requires the 'textual' package. Install with: pip install opentools[dashboard]")
+        raise typer.Exit(1)
     try:
         plugin_dir, config = _get_config()
         db_path = plugin_dir.parent.parent / "engagements" / "opentools.db"

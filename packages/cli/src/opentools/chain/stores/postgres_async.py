@@ -1285,6 +1285,21 @@ class PostgresChainStore:
         result = await self._session.execute(stmt)
         return [_orm_to_linker_run(r) for r in result.scalars()]
 
+    @require_initialized
+    @require_user_scope
+    async def fetch_linker_run_by_id(
+        self, run_id: str, *, user_id: UUID
+    ) -> LinkerRun | None:
+        M = self._models
+        assert self._session is not None
+        stmt = select(M.ChainLinkerRun).where(
+            M.ChainLinkerRun.id == run_id,
+            M.ChainLinkerRun.user_id == user_id,
+        )
+        result = await self._session.execute(stmt)
+        row = result.scalar_one_or_none()
+        return _orm_to_linker_run(row) if row else None
+
     # ─── Extraction state + parser output ────────────────────────────────
     #
     # Backed by the chain_finding_extraction_state and

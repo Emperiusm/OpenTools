@@ -25,6 +25,7 @@ class TimelineTab(Widget):
     def __init__(self, state: DashboardState, **kwargs) -> None:
         super().__init__(**kwargs)
         self.state = state
+        self._last_snapshot: tuple | None = None
 
     # ------------------------------------------------------------------
     # Compose
@@ -39,8 +40,20 @@ class TimelineTab(Widget):
     # Public API
     # ------------------------------------------------------------------
 
+    def _data_snapshot(self) -> tuple:
+        return (
+            len(self.state.timeline),
+            self.state.timeline[0].id if self.state.timeline else None,
+            self.state.timeline[-1].id if self.state.timeline else None,
+        )
+
     def update_from_state(self) -> None:
         """Clear and rebuild the table from ``self.state.timeline``."""
+        snapshot = self._data_snapshot()
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
+
         table = self.query_one("#timeline-table", DataTable)
         table.clear()
 

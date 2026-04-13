@@ -267,3 +267,29 @@ def test_state_bulk_flag(populated_state):
         populated_state.flag_false_positive(f.id)
     refreshed = populated_state.store.get_findings("eng-1")
     assert all(f.false_positive for f in refreshed)
+
+
+def test_apply_refresh_only_updates_active_tab(dashboard_state):
+    """Only the currently visible tab should be refreshed, not all four."""
+    from unittest.mock import MagicMock
+
+    state = dashboard_state
+    findings_tab = MagicMock()
+    timeline_tab = MagicMock()
+    iocs_tab = MagicMock()
+    containers_tab = MagicMock()
+
+    tabs = {
+        "findings": findings_tab,
+        "timeline": timeline_tab,
+        "iocs": iocs_tab,
+        "containers": containers_tab,
+    }
+
+    active_tab = "findings"
+    tabs[active_tab].update_from_state()
+
+    findings_tab.update_from_state.assert_called_once()
+    timeline_tab.update_from_state.assert_not_called()
+    iocs_tab.update_from_state.assert_not_called()
+    containers_tab.update_from_state.assert_not_called()

@@ -1,0 +1,103 @@
+{
+  "_comment": "Per-tool severity label to canonical severity mapping. Canonical values: critical, high, medium, low, info.",
+  "semgrep": {
+    "ERROR": "high",
+    "WARNING": "medium",
+    "INFO": "info",
+    "error": "high",
+    "warning": "medium",
+    "info": "info"
+  },
+  "nuclei": {
+    "critical": "critical",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "info": "info",
+    "unknown": "info",
+    "CRITICAL": "critical",
+    "HIGH": "high",
+    "MEDIUM": "medium",
+    "LOW": "low",
+    "INFO": "info",
+    "UNKNOWN": "info"
+  },
+  "trivy": {
+    "CRITICAL": "critical",
+    "HIGH": "high",
+    "MEDIUM": "medium",
+    "LOW": "low",
+    "UNKNOWN": "info",
+    "critical": "critical",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "unknown": "info"
+  },
+  "codebadger": {
+    "critical": "critical",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "info": "info",
+    "CRITICAL": "critical",
+    "HIGH": "high",
+    "MEDIUM": "medium",
+    "LOW": "low",
+    "INFO": "info"
+  },
+  "gitleaks": {
+    "secret": "high",
+    "SECRET": "high",
+    "high": "high",
+    "HIGH": "high",
+    "medium": "medium",
+    "MEDIUM": "medium",
+    "low": "low",
+    "LOW": "low",
+    "info": "info",
+    "INFO": "info"
+  },
+  "nikto": {
+    "0": "info",
+    "1": "info",
+    "2": "low",
+    "3": "medium",
+    "4": "high",
+    "5": "high",
+    "6": "critical",
+    "OSVDB": "medium",
+    "info": "info",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "critical": "critical"
+  },
+  "nmap": {
+    "open": "info",
+    "filtered": "info",
+    "closed": "info",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "critical": "critical",
+    "info": "info",
+    "LOW": "low",
+    "MEDIUM": "medium",
+    "HIGH": "high",
+    "CRITICAL": "critical",
+    "INFO": "info"
+  },
+  "sqlmap": {
+    "critical": "critical",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "info": "info",
+    "CRITICAL": "critical",
+    "HIGH": "high",
+    "MEDIUM": "medium",
+    "LOW": "low",
+    "INFO": "info"
+  }
+}

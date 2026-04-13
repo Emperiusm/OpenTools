@@ -33,6 +33,7 @@ class ContainersTab(Widget):
     def __init__(self, state: DashboardState, **kwargs) -> None:
         super().__init__(**kwargs)
         self.state = state
+        self._last_snapshot: tuple | None = None
 
     # ------------------------------------------------------------------
     # Compose
@@ -47,8 +48,19 @@ class ContainersTab(Widget):
     # Public API
     # ------------------------------------------------------------------
 
+    def _data_snapshot(self) -> tuple:
+        return (
+            len(self.state.containers),
+            tuple((c.name, c.state) for c in self.state.containers),
+        )
+
     def update_from_state(self) -> None:
         """Clear and rebuild the table from ``self.state.containers``."""
+        snapshot = self._data_snapshot()
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
+
         table = self.query_one("#containers-table", DataTable)
         table.clear()
 
@@ -73,7 +85,7 @@ class ContainersTab(Widget):
     # Actions
     # ------------------------------------------------------------------
 
-    def action_toggle_container(self) -> None:
+    async def action_toggle_container(self) -> None:
         """Start a stopped/exited container, or stop a running one."""
         container = self._get_selected_container()
         if container is None:
@@ -81,22 +93,22 @@ class ContainersTab(Widget):
 
         state = str(container.state).lower()
         if state == "running":
-            self.state.stop_container(container.name)
             self.app.notify(f"Stopping container: {container.name}")
+            await self.state.stop_container(container.name)
         else:
-            self.state.start_container(container.name)
             self.app.notify(f"Starting container: {container.name}")
+            await self.state.start_container(container.name)
 
         self.update_from_state()
 
-    def action_restart_container(self) -> None:
+    async def action_restart_container(self) -> None:
         """Restart the selected container."""
         container = self._get_selected_container()
         if container is None:
             return
 
-        self.state.restart_container(container.name)
         self.app.notify(f"Restarting container: {container.name}")
+        await self.state.restart_container(container.name)
         self.update_from_state()
 
     # ------------------------------------------------------------------

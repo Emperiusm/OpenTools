@@ -1,0 +1,43 @@
+id: web-quick
+name: Web Quick Scan
+description: Fast web application reconnaissance and vulnerability scanning
+target_types:
+  - url
+phases:
+  - name: discovery
+    parallel: true
+    tools:
+      - tool: whatweb
+        task_type: shell
+        command_template: "whatweb --color=never --log-json=- {target}"
+        parser: whatweb
+        priority: 10
+        tier: fast
+        resource_group: shell
+        preferred_output_format: json
+      - tool: waybackurls
+        task_type: shell
+        command_template: "echo {target_host} | waybackurls"
+        parser: waybackurls
+        priority: 20
+        tier: fast
+        resource_group: shell
+  - name: scanning
+    parallel: true
+    tools:
+      - tool: nuclei
+        task_type: shell
+        command_template: "nuclei -u {target} -json"
+        parser: nuclei
+        priority: 30
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
+      - tool: nikto
+        task_type: shell
+        command_template: "nikto -h {target} -Format json"
+        parser: nikto
+        priority: 40
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json

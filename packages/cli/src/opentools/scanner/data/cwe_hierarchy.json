@@ -1,0 +1,248 @@
+{
+  "_comment": "CWE parent/child hierarchy. Keys are CWE IDs; values contain name, optional parent, and children list.",
+  "CWE-20": {
+    "name": "Improper Input Validation",
+    "parent": null,
+    "children": ["CWE-89", "CWE-79", "CWE-78", "CWE-22", "CWE-77", "CWE-94"]
+  },
+  "CWE-74": {
+    "name": "Injection",
+    "parent": null,
+    "children": ["CWE-89", "CWE-79", "CWE-78", "CWE-77", "CWE-94", "CWE-917"]
+  },
+  "CWE-89": {
+    "name": "SQL Injection",
+    "parent": "CWE-74",
+    "children": ["CWE-564"]
+  },
+  "CWE-564": {
+    "name": "SQL Injection: Hibernate",
+    "parent": "CWE-89",
+    "children": []
+  },
+  "CWE-79": {
+    "name": "Cross-Site Scripting (XSS)",
+    "parent": "CWE-74",
+    "children": ["CWE-80", "CWE-83", "CWE-87"]
+  },
+  "CWE-80": {
+    "name": "Basic XSS",
+    "parent": "CWE-79",
+    "children": []
+  },
+  "CWE-83": {
+    "name": "Improper Neutralization of Script in Attributes",
+    "parent": "CWE-79",
+    "children": []
+  },
+  "CWE-87": {
+    "name": "Improper Neutralization of Alternate XSS Syntax",
+    "parent": "CWE-79",
+    "children": []
+  },
+  "CWE-78": {
+    "name": "OS Command Injection",
+    "parent": "CWE-74",
+    "children": []
+  },
+  "CWE-77": {
+    "name": "Command Injection",
+    "parent": "CWE-74",
+    "children": []
+  },
+  "CWE-94": {
+    "name": "Code Injection",
+    "parent": "CWE-74",
+    "children": ["CWE-95", "CWE-96"]
+  },
+  "CWE-95": {
+    "name": "Eval Injection",
+    "parent": "CWE-94",
+    "children": []
+  },
+  "CWE-96": {
+    "name": "Static Code Injection",
+    "parent": "CWE-94",
+    "children": []
+  },
+  "CWE-22": {
+    "name": "Path Traversal",
+    "parent": "CWE-20",
+    "children": ["CWE-23", "CWE-36"]
+  },
+  "CWE-23": {
+    "name": "Relative Path Traversal",
+    "parent": "CWE-22",
+    "children": []
+  },
+  "CWE-36": {
+    "name": "Absolute Path Traversal",
+    "parent": "CWE-22",
+    "children": []
+  },
+  "CWE-119": {
+    "name": "Buffer Overflow",
+    "parent": null,
+    "children": ["CWE-120", "CWE-121", "CWE-122", "CWE-787"]
+  },
+  "CWE-120": {
+    "name": "Classic Buffer Overflow",
+    "parent": "CWE-119",
+    "children": []
+  },
+  "CWE-121": {
+    "name": "Stack-based Buffer Overflow",
+    "parent": "CWE-119",
+    "children": []
+  },
+  "CWE-122": {
+    "name": "Heap-based Buffer Overflow",
+    "parent": "CWE-119",
+    "children": []
+  },
+  "CWE-787": {
+    "name": "Out-of-bounds Write",
+    "parent": "CWE-119",
+    "children": []
+  },
+  "CWE-190": {
+    "name": "Integer Overflow or Wraparound",
+    "parent": null,
+    "children": []
+  },
+  "CWE-200": {
+    "name": "Exposure of Sensitive Information",
+    "parent": null,
+    "children": ["CWE-209", "CWE-532"]
+  },
+  "CWE-209": {
+    "name": "Information Exposure Through an Error Message",
+    "parent": "CWE-200",
+    "children": []
+  },
+  "CWE-532": {
+    "name": "Insertion of Sensitive Information into Log File",
+    "parent": "CWE-200",
+    "children": []
+  },
+  "CWE-287": {
+    "name": "Improper Authentication",
+    "parent": null,
+    "children": ["CWE-306", "CWE-798"]
+  },
+  "CWE-306": {
+    "name": "Missing Authentication for Critical Function",
+    "parent": "CWE-287",
+    "children": []
+  },
+  "CWE-798": {
+    "name": "Use of Hard-coded Credentials",
+    "parent": "CWE-287",
+    "children": []
+  },
+  "CWE-311": {
+    "name": "Missing Encryption of Sensitive Data",
+    "parent": null,
+    "children": ["CWE-319"]
+  },
+  "CWE-319": {
+    "name": "Cleartext Transmission of Sensitive Information",
+    "parent": "CWE-311",
+    "children": []
+  },
+  "CWE-327": {
+    "name": "Use of a Broken or Risky Cryptographic Algorithm",
+    "parent": null,
+    "children": []
+  },
+  "CWE-352": {
+    "name": "Cross-Site Request Forgery (CSRF)",
+    "parent": null,
+    "children": []
+  },
+  "CWE-362": {
+    "name": "Race Condition",
+    "parent": null,
+    "children": ["CWE-367"]
+  },
+  "CWE-367": {
+    "name": "Time-of-check Time-of-use (TOCTOU) Race Condition",
+    "parent": "CWE-362",
+    "children": []
+  },
+  "CWE-400": {
+    "name": "Uncontrolled Resource Consumption",
+    "parent": null,
+    "children": []
+  },
+  "CWE-415": {
+    "name": "Double Free",
+    "parent": null,
+    "children": []
+  },
+  "CWE-416": {
+    "name": "Use After Free",
+    "parent": null,
+    "children": []
+  },
+  "CWE-434": {
+    "name": "Unrestricted Upload of File with Dangerous Type",
+    "parent": null,
+    "children": []
+  },
+  "CWE-457": {
+    "name": "Use of Uninitialized Variable",
+    "parent": null,
+    "children": []
+  },
+  "CWE-476": {
+    "name": "NULL Pointer Dereference",
+    "parent": null,
+    "children": []
+  },
+  "CWE-502": {
+    "name": "Deserialization of Untrusted Data",
+    "parent": null,
+    "children": []
+  },
+  "CWE-601": {
+    "name": "URL Redirection to Untrusted Site (Open Redirect)",
+    "parent": null,
+    "children": []
+  },
+  "CWE-611": {
+    "name": "XML External Entity (XXE) Injection",
+    "parent": null,
+    "children": []
+  },
+  "CWE-134": {
+    "name": "Use of Externally-Controlled Format String",
+    "parent": null,
+    "children": []
+  },
+  "CWE-676": {
+    "name": "Use of Potentially Dangerous Function",
+    "parent": null,
+    "children": []
+  },
+  "CWE-732": {
+    "name": "Incorrect Permission Assignment for Critical Resource",
+    "parent": null,
+    "children": []
+  },
+  "CWE-917": {
+    "name": "Expression Language Injection",
+    "parent": "CWE-74",
+    "children": []
+  },
+  "CWE-918": {
+    "name": "Server-Side Request Forgery (SSRF)",
+    "parent": null,
+    "children": []
+  },
+  "CWE-1021": {
+    "name": "Improper Restriction of Rendered UI Layers (Missing CSP)",
+    "parent": null,
+    "children": []
+  }
+}

@@ -1,4 +1,19 @@
-"""SQLModel table definitions for the web dashboard."""
+"""SQLModel table definitions for the web dashboard.
+
+Architecture note
+-----------------
+Domain types imported from ``opentools.models``; ORM tables below are
+SQLModel projections of the same schema with additional web-specific
+columns (``user_id``, foreign-key constraints, TZ-aware datetime
+handling, JSON/Text column overrides).
+
+The canonical field list for each domain object lives in the CLI
+package (``packages/cli/src/opentools/models.py``).  When a field is
+added there it should be mirrored here in the corresponding ORM table.
+Enum types (Severity, EngagementType, etc.) are imported directly from
+the CLI package so both layers share a single source of truth for
+allowed values.
+"""
 
 import uuid
 from datetime import datetime, timezone
@@ -8,6 +23,17 @@ from fastapi_users import schemas as fu_schemas
 from sqlalchemy import Column, Index, Text, JSON, UniqueConstraint
 from sqlalchemy.types import TypeDecorator, DateTime
 from sqlmodel import Field, SQLModel
+
+# -- Domain enums (single source of truth in the CLI package) ----------------
+from opentools.models import (  # noqa: F401 – re-exported for web consumers
+    Severity,
+    EngagementType,
+    EngagementStatus,
+    FindingStatus,
+    Confidence,
+    IOCType,
+    ArtifactType,
+)
 
 
 class TZAwareDateTime(TypeDecorator):
@@ -64,6 +90,7 @@ class UserCreate(fu_schemas.BaseUserCreate):
 
 
 # --- Engagement -----------------------------------------------------------
+# ORM projection of opentools.models.Engagement; adds user_id FK.
 
 class Engagement(SQLModel, table=True):
     __tablename__ = "engagement"
@@ -80,6 +107,7 @@ class Engagement(SQLModel, table=True):
 
 
 # --- Finding --------------------------------------------------------------
+# ORM projection of opentools.models.Finding; adds user_id FK, JSON/Text columns.
 
 class Finding(SQLModel, table=True):
     __tablename__ = "finding"
@@ -110,6 +138,7 @@ class Finding(SQLModel, table=True):
 
 
 # --- TimelineEvent --------------------------------------------------------
+# ORM projection of opentools.models.TimelineEvent; adds user_id FK.
 
 class TimelineEvent(SQLModel, table=True):
     __tablename__ = "timeline_event"
@@ -125,6 +154,7 @@ class TimelineEvent(SQLModel, table=True):
 
 
 # --- IOC ------------------------------------------------------------------
+# ORM projection of opentools.models.IOC; adds user_id FK.
 
 class IOC(SQLModel, table=True):
     __tablename__ = "ioc"
@@ -140,6 +170,7 @@ class IOC(SQLModel, table=True):
 
 
 # --- Artifact -------------------------------------------------------------
+# ORM projection of opentools.models.Artifact; adds user_id FK.
 
 class Artifact(SQLModel, table=True):
     __tablename__ = "artifact"
@@ -154,6 +185,7 @@ class Artifact(SQLModel, table=True):
 
 
 # --- AuditEntry -----------------------------------------------------------
+# ORM projection of opentools.models.AuditEntry; adds user_id FK, JSON column.
 
 class AuditEntry(SQLModel, table=True):
     __tablename__ = "audit_entry"
@@ -168,6 +200,7 @@ class AuditEntry(SQLModel, table=True):
 
 
 # --- IOCEnrichment --------------------------------------------------------
+# ORM projection of opentools.models.IOCEnrichmentRecord; adds user_id FK.
 
 class IOCEnrichment(SQLModel, table=True):
     __tablename__ = "ioc_enrichment"
@@ -184,6 +217,93 @@ class IOCEnrichment(SQLModel, table=True):
     tags: Optional[str] = None  # JSON array
     fetched_at: datetime = Field(**_TZ_KW)
     ttl_seconds: int = 86400
+
+
+# --- Scan runner tables (migration 006) -----------------------------------
+
+
+class ScanRecord(SQLModel, table=True):
+    """ORM projection for the scan table."""
+    __tablename__ = "scan"
+    id: str = Field(primary_key=True)
+    user_id: Optional[uuid.UUID] = Field(default=None, foreign_key="user.id", index=True)
+    engagement_id: str = Field(index=True)
+    target: str
+    target_type: str
+    resolved_path: Optional[str] = None
+    target_metadata: str = Field(default="{}", sa_column=Column(Text))
+    profile: Optional[str] = None
+    profile_snapshot: str = Field(default="{}", sa_column=Column(Text))
+    mode: str = Field(default="auto")
+    status: str = Field(default="pending")
+    config: Optional[str] = Field(default=None, sa_column=Column(Text))
+    baseline_scan_id: Optional[str] = None
+    tools_planned: str = Field(default="[]", sa_column=Column(Text))
+    tools_completed: str = Field(default="[]", sa_column=Column(Text))
+    tools_failed: str = Field(default="[]", sa_column=Column(Text))
+    finding_count: int = Field(default=0)
+    estimated_duration_seconds: Optional[int] = None
+    metrics: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(**_TZ_KW)
+    started_at: Optional[datetime] = Field(default=None, **_TZ_KW)
+    completed_at: Optional[datetime] = Field(default=None, **_TZ_KW)
+
+
+class ScanTaskRecord(SQLModel, table=True):
+    """ORM projection for the scan_task table."""
+    __tablename__ = "scan_task"
+    id: str = Field(primary_key=True)
+    scan_id: str = Field(foreign_key="scan.id", index=True)
+    name: str
+    tool: str
+    task_type: str
+    command: Optional[str] = Field(default=None, sa_column=Column(Text))
+    mcp_server: Optional[str] = None
+    mcp_tool: Optional[str] = None
+    mcp_args: Optional[str] = Field(default=None, sa_column=Column(Text))
+    depends_on: str = Field(default="[]", sa_column=Column(Text))
+    reactive_edges: str = Field(default="[]", sa_column=Column(Text))
+    status: str = Field(default="pending")
+    priority: int = Field(default=50)
+    tier: str = Field(default="normal")
+    resource_group: Optional[str] = None
+    retry_policy: Optional[str] = Field(default=None, sa_column=Column(Text))
+    cache_key: Optional[str] = None
+    parser: Optional[str] = None
+    tool_version: Optional[str] = None
+    exit_code: Optional[int] = None
+    stdout: Optional[str] = Field(default=None, sa_column=Column(Text))
+    stderr: Optional[str] = Field(default=None, sa_column=Column(Text))
+    output_hash: Optional[str] = None
+    duration_ms: Optional[int] = None
+    cached: bool = Field(default=False)
+    isolation: str = Field(default="none")
+    spawned_by: Optional[str] = None
+    spawned_reason: Optional[str] = None
+    started_at: Optional[datetime] = Field(default=None, **_TZ_KW)
+    completed_at: Optional[datetime] = Field(default=None, **_TZ_KW)
+
+
+class ScanEventRecord(SQLModel, table=True):
+    """ORM projection for the scan_event table."""
+    __tablename__ = "scan_event"
+    id: str = Field(primary_key=True)
+    scan_id: str = Field(foreign_key="scan.id")
+    type: str
+    sequence: int
+    timestamp: datetime = Field(**_TZ_KW)
+    task_id: Optional[str] = None
+    data: str = Field(default="{}", sa_column=Column(Text))
+    tasks_total: int = Field(default=0)
+    tasks_completed: int = Field(default=0)
+    tasks_running: int = Field(default=0)
+    findings_total: int = Field(default=0)
+    elapsed_seconds: float = Field(default=0)
+    estimated_remaining_seconds: Optional[float] = None
+
+    __table_args__ = (
+        Index("ix_scan_event_scan_seq", "scan_id", "sequence"),
+    )
 
 
 # --- Chain data layer (Phase 3C.1) ---------------------------------------

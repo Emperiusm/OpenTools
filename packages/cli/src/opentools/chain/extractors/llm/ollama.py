@@ -89,7 +89,10 @@ class OllamaProvider:
         if self._call_fn is not None:
             return await self._call_fn(prompt)
         # Production path — only exercised in smoke tests (ENABLE_LLM_SMOKE_TESTS=1)
-        import ollama
+        try:
+            import ollama
+        except ImportError:
+            raise ImportError("Ollama provider requires: pip install opentools[ollama]") from None
 
         client = self._client or ollama.AsyncClient()
         response = await client.generate(model=self.model, prompt=prompt, format="json")

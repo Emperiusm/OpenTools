@@ -140,6 +140,7 @@ class Finding(BaseModel):
     dedup_confidence: Optional[Confidence] = None
     created_at: datetime
     deleted_at: Optional[datetime] = None
+    scan_id: Optional[str] = None
 
 
 class TimelineEvent(BaseModel):

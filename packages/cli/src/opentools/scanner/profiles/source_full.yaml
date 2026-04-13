@@ -1,0 +1,54 @@
+id: source-full
+name: Source Full Scan
+description: Comprehensive source code analysis with SAST, secrets detection, SCA, and CPG analysis
+target_types:
+  - source_code
+phases:
+  - name: static-analysis
+    parallel: true
+    tools:
+      - tool: semgrep
+        task_type: shell
+        command_template: "semgrep --config auto --json {target}"
+        parser: semgrep
+        priority: 20
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
+      - tool: gitleaks
+        task_type: shell
+        command_template: "gitleaks detect --source {target} --report-format json --report-path -"
+        parser: gitleaks
+        priority: 30
+        tier: fast
+        resource_group: shell
+        preferred_output_format: json
+      - tool: trivy
+        task_type: shell
+        command_template: "trivy fs --format json {target}"
+        parser: trivy
+        priority: 40
+        tier: normal
+        resource_group: shell
+        optional: true
+        condition: "has_package_lock or 'requirements.txt' in framework_hints"
+        preferred_output_format: json
+  - name: cpg-analysis
+    parallel: false
+    tools:
+      - tool: codebadger
+        task_type: mcp_call
+        mcp_server: codebadger
+        mcp_tool: generate_cpg
+        mcp_args_template:
+          path: "{target}"
+        priority: 50
+        tier: heavy
+        resource_group: codebadger
+        optional: true
+reactive_edges:
+  - evaluator: "builtin:high_severity_to_deep_dive"
+    trigger_tool: "semgrep"
+    condition: "severity in ['critical', 'high']"
+    max_spawns: 5
+    max_spawns_per_trigger: 2
