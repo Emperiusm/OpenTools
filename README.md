@@ -21,12 +21,12 @@
 </p>
 
 <p align="center">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-1157%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-1350%2B%20passing-brightgreen">
   <img alt="Skills" src="https://img.shields.io/badge/skills-6-blue">
   <img alt="Tools" src="https://img.shields.io/badge/tools-50%2B-orange">
-  <img alt="Lines" src="https://img.shields.io/badge/lines-30K%20Python%20%7C%201.7K%20TypeScript-yellow">
+  <img alt="Lines" src="https://img.shields.io/badge/lines-33K%20Python%20%7C%201.7K%20TypeScript-yellow">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4">
-  <img alt="PRs" src="https://img.shields.io/badge/PRs-9%20merged-purple">
+  <img alt="PRs" src="https://img.shields.io/badge/PRs-10%20merged-purple">
 </p>
 
 ---
@@ -321,8 +321,11 @@ Target → TargetDetector → ScanPlanner → ScanEngine → Parsers → Pipelin
            │                  │              │ events    │          │ score
 ```
 
-- **Executors** — Shell, Docker, MCP server (connection-pooled)
+- **Executors** — Shell, Docker, MCP server (connection-pooled), Proxied Shell (ephemeral cloud proxy)
 - **DAG engine** — dependency-aware task dispatch with reactive edges (one tool's output triggers another)
+- **Dynamic mutation** — OutputAnalyzers extract structured intel from tool output, MutationStrategies inject new tasks into the DAG at runtime based on accumulated attack surface state (KillChainState)
+- **HITL approval gates** — dangerous tasks (C2 deployment, exploitation) pause for operator approval with configurable timeouts, durable persistence, and write-before-signal crash safety
+- **Ephemeral proxy routing** — high-throughput scans route through auto-provisioned cloud nodes (DigitalOcean, Vultr) for rate-limit resilience, with guaranteed teardown
 - **Normalization** — paths, CWEs, severities, titles standardized across tools
 - **Deduplication** — strict hash + fuzzy multi-pass matching across tools
 - **Correlation** — cross-finding relation detection, remediation grouping
@@ -384,7 +387,7 @@ A full-stack web interface for multi-user engagement management, built on FastAP
 /api/v1/exports/        Data export
 /api/v1/correlation/    Threat correlation
 /api/v1/chain/          Attack chain analysis
-/api/v1/scans/          Scan orchestration (CRUD, control, SSE streaming)
+/api/v1/scans/          Scan orchestration (CRUD, control, SSE, approval gates)
 /api/v1/system/         System info and health
 ```
 
@@ -460,11 +463,14 @@ opentools dashboard --engagement my-audit
 │    │                                                             │
 │    ├── engagement/ ── SQLite store (WAL, FTS5, migrations)       │
 │    ├── scanner/                                                  │
-│    │   ├── engine.py ──── DAG task executor                      │
+│    │   ├── engine.py ──── DAG task executor + mutation + gates    │
 │    │   ├── planner.py ── profile → task graph builder            │
 │    │   ├── pipeline.py ── normalize → dedup → correlate          │
 │    │   ├── parsing/ ── semgrep, gitleaks, trivy, nmap, generic   │
-│    │   ├── executor/ ── shell, docker, MCP                       │
+│    │   ├── executor/ ── shell, docker, MCP, proxied shell        │
+│    │   ├── mutation/ ── analyzers, strategies, kill chain state   │
+│    │   ├── infra/ ── cloud providers, proxy tunnel, sweeper      │
+│    │   ├── approval.py ── HITL gate registry                     │
 │    │   └── store.py ── scan-specific SQLite store                │
 │    ├── chain/                                                    │
 │    │   ├── extractors/ ── regex, parser-aware, LLM              │
@@ -670,7 +676,7 @@ python -m pytest tests/ -v
 ### Project Stats
 
 ```
-3 packages | 220+ source files | 1,150+ tests | 30K Python + 1.7K TypeScript | 9 PRs merged
+3 packages | 240+ source files | 1,350+ tests | 33K Python + 1.7K TypeScript | 10 PRs merged
 ```
 
 ### Tech Stack
@@ -774,6 +780,20 @@ The parser router auto-discovers parser modules — no registration needed.
 - [x] CLI scan commands — plan, run, status, history, findings, cancel
 - [x] Web scan API with SSE streaming
 - [x] Performance optimization pass — batch DB writes, lazy fetching, reverse indexes, singleton stores
+
+### Phase 3.5: Reactive Engine Expansion
+
+- [x] Dynamic DAG mutation — OutputAnalyzer → KillChainState → MutationStrategy pipeline
+- [x] Nmap and Nuclei output analyzers for structured intel extraction
+- [x] RedisProbeStrategy — auto-pivot on discovered Redis services
+- [x] Ephemeral proxy routing — CloudNodeProvider ABC with DigitalOcean + Vultr
+- [x] Shielded teardown — guaranteed cloud node destruction even under cancellation
+- [x] ProxiedShellExecutor — transparent proxy routing for NETWORK_ISOLATED tasks
+- [x] Orphan node sweeper for startup cleanup of leaked infrastructure
+- [x] HITL approval gates — persistence-first, execution wrapper model
+- [x] ApprovalRegistry — in-memory notification hub with database-owned expiry
+- [x] FastAPI gate endpoints — list/approve/reject with write-before-signal guarantee
+- [x] Command injection guard for strategy-spawned tasks
 
 ### Phase 4 (Planned)
 
