@@ -144,9 +144,12 @@ class ScanPipeline:
         # 2. Normalize
         raw_findings = self._normalization.normalize(raw_findings)
 
-        # 3. Save raw findings to store
-        for rf in raw_findings:
-            await self.store.save_raw_finding(rf)
+        # 3. Save raw findings to store (batched)
+        if hasattr(self.store, 'save_raw_findings_batch'):
+            await self.store.save_raw_findings_batch(raw_findings)
+        else:
+            for rf in raw_findings:
+                await self.store.save_raw_finding(rf)
 
         # 4. Deduplicate
         dedup_findings = self._dedup.deduplicate(raw_findings)
@@ -171,8 +174,11 @@ class ScanPipeline:
         # 7. Lifecycle transitions
         dedup_findings = self._lifecycle.apply(dedup_findings)
 
-        # 8. Save dedup findings to store
-        for df in dedup_findings:
-            await self.store.save_dedup_finding(df)
+        # 8. Save dedup findings to store (batched)
+        if hasattr(self.store, 'save_dedup_findings_batch'):
+            await self.store.save_dedup_findings_batch(dedup_findings)
+        else:
+            for df in dedup_findings:
+                await self.store.save_dedup_finding(df)
 
         return dedup_findings

@@ -338,6 +338,17 @@ class SqliteScanStore:
         )
         await conn.commit()
 
+    async def save_raw_findings_batch(self, findings: list[RawFinding]) -> None:
+        """Insert multiple raw findings in a single transaction."""
+        if not findings:
+            return
+        conn = self._require_conn()
+        await conn.executemany(
+            "INSERT INTO raw_finding (id, scan_id, data) VALUES (?, ?, ?)",
+            [(f.id, f.scan_id, f.model_dump_json()) for f in findings],
+        )
+        await conn.commit()
+
     async def get_raw_findings(self, scan_id: str) -> list[RawFinding]:
         """Return all raw findings for a scan."""
         conn = self._require_conn()
@@ -358,6 +369,17 @@ class SqliteScanStore:
             "INSERT INTO dedup_finding (id, engagement_id, first_seen_scan_id, data) VALUES (?, ?, ?, ?)",
             (finding.id, finding.engagement_id, finding.first_seen_scan_id,
              finding.model_dump_json()),
+        )
+        await conn.commit()
+
+    async def save_dedup_findings_batch(self, findings: list[DeduplicatedFinding]) -> None:
+        """Insert multiple deduplicated findings in a single transaction."""
+        if not findings:
+            return
+        conn = self._require_conn()
+        await conn.executemany(
+            "INSERT INTO dedup_finding (id, engagement_id, first_seen_scan_id, data) VALUES (?, ?, ?, ?)",
+            [(f.id, f.engagement_id, f.first_seen_scan_id, f.model_dump_json()) for f in findings],
         )
         await conn.commit()
 
