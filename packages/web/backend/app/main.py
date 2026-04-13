@@ -20,6 +20,7 @@ from app.routes import (
     system,
     correlation,
     chain,
+    scans,
 )
 
 
@@ -69,3 +70,4 @@ app.include_router(exports.router)
 app.include_router(system.router)
 app.include_router(correlation.router)
 app.include_router(chain.router)
+app.include_router(scans.router)
