@@ -47,6 +47,6 @@ class FindingLifecycle:
                 f.corroboration_count >= self._confirm_corroboration
                 or f.confidence_score >= self._confirm_confidence
             ):
-                return f.model_copy(update={"status": FindingStatus.CONFIRMED})
+                f.status = FindingStatus.CONFIRMED
 
         return f

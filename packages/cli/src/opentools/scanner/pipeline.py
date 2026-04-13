@@ -155,11 +155,9 @@ class ScanPipeline:
         dedup_findings = self._dedup.deduplicate(raw_findings)
 
         # Set engagement_id and scan_id on each dedup finding
-        for i, df in enumerate(dedup_findings):
-            dedup_findings[i] = df.model_copy(update={
-                "engagement_id": self.engagement_id,
-                "first_seen_scan_id": self.scan_id,
-            })
+        for df in dedup_findings:
+            df.engagement_id = self.engagement_id
+            df.first_seen_scan_id = self.scan_id
 
         # 5. Corroboration scoring
         dedup_findings = self._corroboration.score(dedup_findings)

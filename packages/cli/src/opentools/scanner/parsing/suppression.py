@@ -37,12 +37,9 @@ class SuppressionEngine:
         for f in findings:
             matched_rule = self._check_rules(active_rules, f)
             if matched_rule is not None:
-                result.append(f.model_copy(update={
-                    "suppressed": True,
-                    "suppression_rule_id": matched_rule.id,
-                }))
-            else:
-                result.append(f)
+                f.suppressed = True
+                f.suppression_rule_id = matched_rule.id
+            result.append(f)
         return result
 
     def _check_rules(

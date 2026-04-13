@@ -78,7 +78,8 @@ class CorroborationScorer:
         fp_penalty = 0.3 if f.previously_marked_fp else 1.0
 
         confidence = min(base * boost * fp_penalty, 1.0)
-        return f.model_copy(update={"confidence_score": round(confidence, 4)})
+        f.confidence_score = round(confidence, 4)
+        return f
 
     def _base_confidence(self, tools: list[str]) -> float:
         """Average parser confidence tier for the given tools."""
@@ -142,4 +143,5 @@ class ConfidenceDecay:
         new_confidence = max(f.confidence_score * decay_factor, self._floor)
         new_confidence = min(new_confidence, f.confidence_score)  # Never increase
 
-        return f.model_copy(update={"confidence_score": round(new_confidence, 4)})
+        f.confidence_score = round(new_confidence, 4)
+        return f
