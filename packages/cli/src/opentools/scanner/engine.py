@@ -16,6 +16,7 @@ from opentools.scanner.models import (
     TaskStatus,
     TaskType,
 )
+from opentools.scanner.mutation.models import KillChainState
 from opentools.shared.progress import EventBus
 from opentools.shared.resource_pool import AdaptiveResourcePool
 
@@ -67,6 +68,12 @@ class ScanEngine:
 
         # Pipeline results: task_id → output, processed during scheduling
         self._pipeline_results: dict[str, TaskOutput] = {}
+
+        # Mutation layer (optional — engine works without it)
+        self._analyzer_registry: Any | None = None
+        self._mutation_strategies: list[Any] = []
+        self._kill_chain = KillChainState()
+        self._max_mutation_spawns: int = 100
 
     # ------------------------------------------------------------------
     # Public API
@@ -120,6 +127,23 @@ class ScanEngine:
     def set_cache(self, cache: dict[str, TaskOutput]) -> None:
         """Set the in-memory output cache (stub for real cache backend)."""
         self._cache = cache
+
+    def set_analyzer_registry(self, registry: Any) -> None:
+        """Set the OutputAnalyzer registry for mutation layer."""
+        self._analyzer_registry = registry
+
+    def set_mutation_strategies(self, strategies: list[Any]) -> None:
+        """Set the mutation strategies for dynamic task injection."""
+        self._mutation_strategies = list(strategies)
+
+    def set_max_mutation_spawns(self, limit: int) -> None:
+        """Set the global budget for mutation-spawned tasks."""
+        self._max_mutation_spawns = limit
+
+    @property
+    def kill_chain_state(self) -> KillChainState:
+        """Read-only access to accumulated attack surface state."""
+        return self._kill_chain
 
     async def run(self) -> None:
         """Execute the full task DAG."""
@@ -268,10 +292,15 @@ class ScanEngine:
         if self._pipeline is not None:
             self._pipeline_results[task_id] = output
 
-        # Evaluate reactive edges
-        new_tasks = self._evaluate_edges(task, output)
-        if new_tasks:
-            self._inject_tasks(new_tasks)
+        # Mutation layer (new)
+        mutation_tasks = self._evaluate_mutations(task, output)
+
+        # Existing reactive edges (backward compatible)
+        edge_tasks = self._evaluate_edges(task, output)
+
+        all_new = mutation_tasks + edge_tasks
+        if all_new:
+            self._inject_tasks(all_new)
 
     def _mark_failed(self, task_id: str, reason: str) -> None:
         task = self._tasks[task_id]
@@ -347,11 +376,71 @@ class ScanEngine:
 
         return new_tasks
 
+    # ------------------------------------------------------------------
+    # Mutation layer
+    # ------------------------------------------------------------------
+
+    def _evaluate_mutations(
+        self, task: ScanTask, output: TaskOutput
+    ) -> list[ScanTask]:
+        """Run mutation layer: analyze output, update state, evaluate strategies."""
+        if self._analyzer_registry is None:
+            return []
+
+        # 1. Extract intel from tool output
+        analyzer = self._analyzer_registry.get(task.tool)
+        if analyzer is not None and output.stdout:
+            bundle = analyzer.analyze(output.stdout, output.stderr or "")
+            self._kill_chain.ingest(bundle)
+
+        # 2. Evaluate strategies against accumulated state
+        new_tasks: list[ScanTask] = []
+        if self._kill_chain.total_spawned >= self._max_mutation_spawns:
+            return []
+
+        for strategy in self._mutation_strategies:
+            budget_used = self._kill_chain.tasks_spawned.get(strategy.name, 0)
+            if budget_used >= strategy.max_spawns:
+                continue
+
+            remaining_strategy = strategy.max_spawns - budget_used
+            remaining_global = self._max_mutation_spawns - self._kill_chain.total_spawned
+
+            spawned = strategy.evaluate(self._kill_chain, self.scan.id, task)
+
+            allowed = min(remaining_strategy, remaining_global, len(spawned))
+            accepted: list[ScanTask] = []
+            for s in spawned[:allowed]:
+                if s.id not in self._tasks:
+                    accepted.append(s)
+
+            if accepted:
+                self._kill_chain.record_spawn(strategy.name, len(accepted))
+                new_tasks.extend(accepted)
+
+        return new_tasks
+
+    # ------------------------------------------------------------------
+    # Task injection
+    # ------------------------------------------------------------------
+
     def _inject_tasks(self, tasks: list[ScanTask]) -> None:
-        """Add dynamically spawned tasks to the graph."""
+        """Add dynamically spawned tasks to the graph.
+        Validates that all dependencies exist. Drops tasks with unknown deps."""
         for t in tasks:
             if t.id in self._tasks:
                 continue
-            self._tasks[t.id] = t
+            valid = True
             for dep in t.depends_on:
-                self._dependents[dep].add(t.id)
+                if dep not in self._tasks:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Dropping spawned task %s: depends on unknown task %s",
+                        t.id, dep,
+                    )
+                    valid = False
+                    break
+            if valid:
+                self._tasks[t.id] = t
+                for dep in t.depends_on:
+                    self._dependents[dep].add(t.id)
