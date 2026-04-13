@@ -402,3 +402,49 @@ class ChainService:
                 "generation": generation,
             },
         }
+
+    # ── Edge curation ───────────────────────────────────────────────
+
+    async def update_relation_status(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        relation_id: str,
+        new_status: str,
+    ) -> dict[str, Any] | None:
+        """Update a relation's status for edge curation.
+
+        Only 'user_confirmed' and 'user_rejected' are valid.
+        On confirm, snapshots current reasons_json into confirmed_at_reasons_json.
+        Returns the updated relation dict, or None if not found.
+        """
+        from sqlalchemy import select
+        from app.models import ChainFindingRelation
+        from datetime import datetime, timezone
+        from opentools.chain.stores.postgres_async import _orm_to_relation
+        from app.services.chain_dto import relation_to_dict
+
+        # Fetch the relation, scoped to user
+        stmt = select(ChainFindingRelation).where(
+            ChainFindingRelation.id == relation_id,
+            ChainFindingRelation.user_id == user_id,
+        )
+        result = await session.execute(stmt)
+        relation = result.scalar_one_or_none()
+        if relation is None:
+            return None
+
+        # Update status
+        relation.status = new_status
+        relation.updated_at = datetime.now(timezone.utc)
+
+        # On confirm, snapshot current reasons for drift detection
+        if new_status == "user_confirmed":
+            relation.confirmed_at_reasons_json = relation.reasons_json
+
+        session.add(relation)
+        await session.commit()
+        await session.refresh(relation)
+
+        return relation_to_dict(_orm_to_relation(relation))
