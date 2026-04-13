@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from opentools.scanner.cancellation import CancellationToken
 from opentools.scanner.executor.base import TaskExecutor, TaskOutput
@@ -18,6 +18,9 @@ from opentools.scanner.models import (
 )
 from opentools.shared.progress import EventBus
 from opentools.shared.resource_pool import AdaptiveResourcePool
+
+if TYPE_CHECKING:
+    from opentools.scanner.pipeline import ScanPipeline
 
 
 class ScanEngine:
@@ -36,12 +39,14 @@ class ScanEngine:
         executors: dict[TaskType, TaskExecutor],
         event_bus: EventBus,
         cancellation: CancellationToken,
+        pipeline: ScanPipeline | None = None,
     ) -> None:
         self.scan = scan
         self._pool = resource_pool
         self._executors = executors
         self._event_bus = event_bus
         self._cancellation = cancellation
+        self._pipeline = pipeline
 
         # Task graph
         self._tasks: dict[str, ScanTask] = {}
@@ -59,6 +64,9 @@ class ScanEngine:
 
         # Cache: cache_key → TaskOutput (stub for real cache backend)
         self._cache: dict[str, TaskOutput] = {}
+
+        # Pipeline results: task_id → output, processed during scheduling
+        self._pipeline_results: dict[str, TaskOutput] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -150,6 +158,9 @@ class ScanEngine:
                 await asyncio.sleep(0.05)
                 continue
 
+            # Process any pending pipeline results
+            await self._process_pipeline_results()
+
             # Dispatch ready tasks
             ready = self.ready_tasks_by_priority()
             for scan_task in ready:
@@ -168,6 +179,8 @@ class ScanEngine:
                 in_flight[scan_task.id] = asyncio.ensure_future(coro)
 
             if not in_flight:
+                # Process remaining pipeline results before exiting
+                await self._process_pipeline_results()
                 break
 
             done, _ = await asyncio.wait(
@@ -259,6 +272,10 @@ class ScanEngine:
         )
         self._completed.add(task_id)
 
+        # Queue output for pipeline processing
+        if self._pipeline is not None:
+            self._pipeline_results[task_id] = output
+
         # Evaluate reactive edges
         new_tasks = self._evaluate_edges(task, output)
         if new_tasks:
@@ -292,6 +309,28 @@ class ScanEngine:
             self.scan = self.scan.model_copy(update={"status": ScanStatus.COMPLETED})
         else:
             self.scan = self.scan.model_copy(update={"status": ScanStatus.FAILED})
+
+    # ------------------------------------------------------------------
+    # Pipeline processing
+    # ------------------------------------------------------------------
+
+    async def _process_pipeline_results(self) -> None:
+        """Process queued pipeline results."""
+        if self._pipeline is None or not self._pipeline_results:
+            return
+
+        for task_id, output in list(self._pipeline_results.items()):
+            task = self._tasks.get(task_id)
+            if task is None:
+                continue
+            try:
+                await self._pipeline.process_task_output(task, output)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Pipeline failed for task %s", task_id
+                )
+            del self._pipeline_results[task_id]
 
     # ------------------------------------------------------------------
     # Reactive edges
