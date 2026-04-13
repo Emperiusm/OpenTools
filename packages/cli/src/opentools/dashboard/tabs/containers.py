@@ -85,7 +85,7 @@ class ContainersTab(Widget):
     # Actions
     # ------------------------------------------------------------------
 
-    def action_toggle_container(self) -> None:
+    async def action_toggle_container(self) -> None:
         """Start a stopped/exited container, or stop a running one."""
         container = self._get_selected_container()
         if container is None:
@@ -93,22 +93,22 @@ class ContainersTab(Widget):
 
         state = str(container.state).lower()
         if state == "running":
-            self.state.stop_container(container.name)
             self.app.notify(f"Stopping container: {container.name}")
+            await self.state.stop_container(container.name)
         else:
-            self.state.start_container(container.name)
             self.app.notify(f"Starting container: {container.name}")
+            await self.state.start_container(container.name)
 
         self.update_from_state()
 
-    def action_restart_container(self) -> None:
+    async def action_restart_container(self) -> None:
         """Restart the selected container."""
         container = self._get_selected_container()
         if container is None:
             return
 
-        self.state.restart_container(container.name)
         self.app.notify(f"Restarting container: {container.name}")
+        await self.state.restart_container(container.name)
         self.update_from_state()
 
     # ------------------------------------------------------------------

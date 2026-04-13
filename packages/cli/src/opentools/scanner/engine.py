@@ -123,19 +123,19 @@ class ScanEngine:
 
     async def run(self) -> None:
         """Execute the full task DAG."""
-        self.scan = self.scan.model_copy(update={"status": ScanStatus.RUNNING})
+        self.scan.status = ScanStatus.RUNNING
         await self._schedule_loop()
         self._finalize()
 
     async def pause(self) -> None:
         """Stop scheduling new tasks. In-flight tasks run to completion."""
         self._paused = True
-        self.scan = self.scan.model_copy(update={"status": ScanStatus.PAUSED})
+        self.scan.status = ScanStatus.PAUSED
 
     async def resume(self) -> None:
         """Resume scheduling from where we left off."""
         self._paused = False
-        self.scan = self.scan.model_copy(update={"status": ScanStatus.RUNNING})
+        self.scan.status = ScanStatus.RUNNING
 
     # ------------------------------------------------------------------
     # Scheduling
@@ -173,9 +173,7 @@ class ScanEngine:
                     self._skip_dependents(scan_task.id)
                     continue
                 self._running.add(scan_task.id)
-                self._tasks[scan_task.id] = scan_task.model_copy(
-                    update={"status": TaskStatus.RUNNING}
-                )
+                scan_task.status = TaskStatus.RUNNING
                 coro = self._execute_task(scan_task, executor)
                 in_flight[scan_task.id] = asyncio.ensure_future(coro)
                 future_to_task[in_flight[scan_task.id]] = scan_task.id
@@ -258,16 +256,12 @@ class ScanEngine:
 
     def _mark_completed(self, task_id: str, output: TaskOutput) -> None:
         task = self._tasks[task_id]
-        self._tasks[task_id] = task.model_copy(
-            update={
-                "status": TaskStatus.COMPLETED,
-                "exit_code": output.exit_code,
-                "stdout": output.stdout,
-                "stderr": output.stderr,
-                "duration_ms": output.duration_ms,
-                "cached": output.cached,
-            }
-        )
+        task.status = TaskStatus.COMPLETED
+        task.exit_code = output.exit_code
+        task.stdout = output.stdout
+        task.stderr = output.stderr
+        task.duration_ms = output.duration_ms
+        task.cached = output.cached
         self._completed.add(task_id)
 
         # Queue output for pipeline processing
@@ -281,9 +275,8 @@ class ScanEngine:
 
     def _mark_failed(self, task_id: str, reason: str) -> None:
         task = self._tasks[task_id]
-        self._tasks[task_id] = task.model_copy(
-            update={"status": TaskStatus.FAILED, "stderr": reason}
-        )
+        task.status = TaskStatus.FAILED
+        task.stderr = reason
         self._failed.add(task_id)
 
     def _skip_dependents(self, failed_task_id: str) -> None:
@@ -293,20 +286,18 @@ class ScanEngine:
             dep_id = to_skip.pop()
             if dep_id in self._skipped or dep_id in self._completed:
                 continue
-            self._tasks[dep_id] = self._tasks[dep_id].model_copy(
-                update={"status": TaskStatus.SKIPPED}
-            )
+            self._tasks[dep_id].status = TaskStatus.SKIPPED
             self._skipped.add(dep_id)
             to_skip.extend(self._dependents.get(dep_id, set()))
 
     def _finalize(self) -> None:
         """Set final scan status based on task outcomes."""
         if self._cancellation.is_cancelled:
-            self.scan = self.scan.model_copy(update={"status": ScanStatus.CANCELLED})
+            self.scan.status = ScanStatus.CANCELLED
         elif self._completed:
-            self.scan = self.scan.model_copy(update={"status": ScanStatus.COMPLETED})
+            self.scan.status = ScanStatus.COMPLETED
         else:
-            self.scan = self.scan.model_copy(update={"status": ScanStatus.FAILED})
+            self.scan.status = ScanStatus.FAILED
 
     # ------------------------------------------------------------------
     # Pipeline processing

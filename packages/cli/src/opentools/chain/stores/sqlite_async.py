@@ -585,16 +585,17 @@ class AsyncChainStore:
         if not rel_list:
             return (0, 0)
 
-        created_count = 0
-        updated_count = 0
+        # Single batch count of pre-existing relations instead of per-row SELECT
+        all_ids = [r.id for r in rel_list]
+        placeholders = ",".join("?" for _ in all_ids)
+        async with self._conn.execute(
+            f"SELECT COUNT(*) FROM finding_relation WHERE id IN ({placeholders})",
+            all_ids,
+        ) as cursor:
+            row = await cursor.fetchone()
+        existing_before = row[0] if row else 0
 
         for r in rel_list:
-            async with self._conn.execute(
-                "SELECT status FROM finding_relation WHERE id = ?", (r.id,)
-            ) as cursor:
-                existing = await cursor.fetchone()
-            is_update = existing is not None
-
             reasons_json = orjson.dumps(
                 [rr.model_dump(mode="json") for rr in r.reasons]
             )
@@ -639,14 +640,11 @@ class AsyncChainStore:
                 ),
             )
 
-            if is_update:
-                updated_count += 1
-            else:
-                created_count += 1
-
         if self._txn_depth == 0:
             await self._conn.commit()
 
+        created_count = len(rel_list) - existing_before
+        updated_count = existing_before
         return (created_count, updated_count)
 
     @require_initialized
@@ -1061,6 +1059,17 @@ class AsyncChainStore:
         ) as cursor:
             rows = await cursor.fetchall()
         return [_row_to_linker_run(row) for row in rows]
+
+    @require_initialized
+    async def fetch_linker_run_by_id(
+        self, run_id: str, *, user_id
+    ) -> LinkerRun | None:
+        async with self._conn.execute(
+            "SELECT * FROM linker_run WHERE id = ?",
+            (run_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _row_to_linker_run(row) if row else None
 
     # ─── Extraction state + parser output ────────────────────────────────
 

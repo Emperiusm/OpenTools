@@ -47,6 +47,7 @@ class FindingsTab(Widget):
         self.state = state
         self._filter_text: str = ""
         self._last_snapshot: tuple | None = None
+        self._visible_findings: list = []
 
     # ------------------------------------------------------------------
     # Compose
@@ -84,6 +85,8 @@ class FindingsTab(Widget):
         needle = self._filter_text.strip().lower()
         findings = self.state.findings
 
+        # Build and cache visible findings list for _get_selected_finding
+        self._visible_findings = []
         row_num = 1
         for finding in findings:
             # Apply filter across severity, title, tool, file_path, cwe
@@ -99,6 +102,7 @@ class FindingsTab(Widget):
                 if needle not in searchable:
                     continue
 
+            self._visible_findings.append(finding)
             sev_key = str(finding.severity).lower()
             severity_cell = self._SEVERITY_MARKUP.get(sev_key, str(finding.severity))
 
@@ -207,23 +211,7 @@ class FindingsTab(Widget):
         if table.cursor_row is None:
             return None
 
-        needle = self._filter_text.strip().lower()
-        visible: list = []
-        for finding in self.state.findings:
-            if needle:
-                searchable = " ".join([
-                    str(finding.severity),
-                    finding.title,
-                    finding.tool,
-                    finding.file_path or "",
-                    finding.cwe or "",
-                    str(finding.status),
-                ]).lower()
-                if needle not in searchable:
-                    continue
-            visible.append(finding)
-
         idx = table.cursor_row
-        if idx < 0 or idx >= len(visible):
+        if idx < 0 or idx >= len(self._visible_findings):
             return None
-        return visible[idx]
+        return self._visible_findings[idx]

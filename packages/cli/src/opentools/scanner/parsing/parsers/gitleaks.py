@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Iterator
+
+import orjson
 
 from opentools.scanner.models import (
     EvidenceQuality,
@@ -25,9 +26,9 @@ class GitleaksParser:
     def validate(self, data: bytes) -> bool:
         """Gitleaks outputs a JSON array of objects."""
         try:
-            parsed = json.loads(data)
+            parsed = orjson.loads(data)
             return isinstance(parsed, list)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (orjson.JSONDecodeError, UnicodeDecodeError):
             return False
 
     def parse(
@@ -36,7 +37,7 @@ class GitleaksParser:
         scan_id: str,
         scan_task_id: str,
     ) -> Iterator[RawFinding]:
-        parsed = json.loads(data)
+        parsed = orjson.loads(data)
         if not isinstance(parsed, list):
             return
 

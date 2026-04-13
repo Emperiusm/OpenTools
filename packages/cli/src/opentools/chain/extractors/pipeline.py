@@ -260,6 +260,9 @@ class ExtractionPipeline:
         new_entity_ids: set[str] = set()
         mentions: list[EntityMention] = []
 
+        # Pre-compute normalized values and entity IDs for all raw extractions
+        normalized: list[tuple[ExtractedEntity, str, str]] = []  # (ex, canonical, eid)
+        unique_eids: set[str] = set()
         for ex in raw:
             try:
                 canonical = normalize(ex.type, ex.value)
@@ -268,8 +271,17 @@ class ExtractionPipeline:
             if not canonical:
                 continue
             eid = entity_id_for(ex.type, canonical)
+            normalized.append((ex, canonical, eid))
+            unique_eids.add(eid)
+
+        # Single batch fetch for all unique entity IDs
+        existing_entities = await self.store.get_entities_by_ids(
+            unique_eids, user_id=user_id,
+        )
+
+        for ex, canonical, eid in normalized:
             if eid not in entities_by_id:
-                existing = await self.store.get_entity(eid, user_id=user_id)
+                existing = existing_entities.get(eid)
                 if existing is None:
                     new_entity_ids.add(eid)
                     entities_by_id[eid] = Entity(

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from opentools.scanner.api import ScanAPI
+from opentools.scanner.api import ScanAPI, _active_scans
 from opentools.scanner.cancellation import CancellationToken
 from opentools.scanner.executor.base import TaskOutput
 from opentools.scanner.models import (
@@ -149,7 +149,7 @@ class TestScanAPILifecycle:
         api = ScanAPI()
         scan = _make_scan(status=ScanStatus.RUNNING)
         token = CancellationToken()
-        api._active_scans[scan.id] = {"scan": scan, "cancel": token}
+        _active_scans[scan.id] = {"scan": scan, "cancel": token}
 
         await api.cancel(scan.id, reason="user requested")
 
@@ -167,7 +167,7 @@ class TestScanAPILifecycle:
         scan = _make_scan(status=ScanStatus.RUNNING)
         engine_mock = MagicMock()
         engine_mock.pause = AsyncMock()
-        api._active_scans[scan.id] = {"scan": scan, "engine": engine_mock}
+        _active_scans[scan.id] = {"scan": scan, "engine": engine_mock}
 
         await api.pause(scan.id)
 
@@ -179,7 +179,7 @@ class TestScanAPILifecycle:
         scan = _make_scan(status=ScanStatus.PAUSED)
         engine_mock = MagicMock()
         engine_mock.resume = AsyncMock()
-        api._active_scans[scan.id] = {"scan": scan, "engine": engine_mock}
+        _active_scans[scan.id] = {"scan": scan, "engine": engine_mock}
 
         await api.resume(scan.id)
 

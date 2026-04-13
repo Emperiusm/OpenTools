@@ -121,6 +121,8 @@ class ScanPipeline:
             logger.warning("Parser '%s' not found for task %s", parser_name, task.id)
             return []
 
+        # Encode once; orjson.loads() accepts both bytes and str but bytes
+        # avoids a redundant internal copy in the C extension.
         raw_bytes = output.stdout.encode("utf-8")
 
         if not parser.validate(raw_bytes):
@@ -129,11 +131,18 @@ class ScanPipeline:
             )
             return []
 
-        # Collect raw findings
-        raw_findings: list[RawFinding] = []
-        try:
+        # Parsing is CPU-bound (JSON decode, hashing, Pydantic construction).
+        # Offload to a thread to avoid blocking the engine's scheduling loop.
+        import asyncio
+
+        def _parse_sync() -> list[RawFinding]:
+            results: list[RawFinding] = []
             for finding in parser.parse(raw_bytes, self.scan_id, task.id):
-                raw_findings.append(finding)
+                results.append(finding)
+            return results
+
+        try:
+            raw_findings = await asyncio.to_thread(_parse_sync)
         except Exception:
             logger.exception("Parser '%s' crashed on task %s", parser_name, task.id)
             return []

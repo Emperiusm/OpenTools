@@ -93,7 +93,10 @@ class AnthropicAPIProvider:
         if self._call_fn is not None:
             return await self._call_fn(prompt)
         # Production path — only exercised in smoke tests (ENABLE_LLM_SMOKE_TESTS=1)
-        import anthropic
+        try:
+            import anthropic
+        except ImportError:
+            raise ImportError("Anthropic provider requires: pip install opentools[anthropic]") from None
 
         client = self._client or anthropic.AsyncAnthropic()
         message = await client.messages.create(

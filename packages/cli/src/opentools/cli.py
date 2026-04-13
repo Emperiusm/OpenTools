@@ -155,7 +155,12 @@ def dashboard(
     engagement: str = typer.Option(None, help="Auto-select engagement on launch"),
 ):
     """Launch the interactive TUI dashboard."""
-    from opentools.dashboard import launch_dashboard as _launch_dash
+    try:
+        from opentools.dashboard import launch_dashboard as _launch_dash
+    except ImportError:
+        import typer as _t
+        _t.echo("Dashboard requires the 'textual' package. Install with: pip install opentools[dashboard]")
+        raise typer.Exit(1)
     try:
         plugin_dir, config = _get_config()
         db_path = plugin_dir.parent.parent / "engagements" / "opentools.db"

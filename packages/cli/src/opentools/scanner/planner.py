@@ -33,6 +33,84 @@ from opentools.scanner.profiles import (
 )
 from opentools.scanner.target import DetectedTarget, TargetDetector
 
+# ---------------------------------------------------------------------------
+# Safe condition evaluator — replaces eval() for profile conditions
+# ---------------------------------------------------------------------------
+
+import ast
+import operator
+
+_SAFE_OPS = {
+    ast.And: lambda vals: all(vals),
+    ast.Or: lambda vals: any(vals),
+}
+
+_SAFE_COMPARE = {
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.In: lambda a, b: a in b,
+    ast.NotIn: lambda a, b: a not in b,
+    ast.Is: operator.is_,
+    ast.IsNot: operator.is_not,
+}
+
+_SAFE_UNARY = {
+    ast.Not: operator.not_,
+    ast.USub: operator.neg,
+}
+
+
+def _safe_eval(expr: str, variables: dict) -> object:
+    """Evaluate a simple boolean expression safely (no code execution).
+
+    Supports: variable lookup, ``in``/``not in``, boolean operators,
+    comparisons, literals (str, int, float, bool, None, list, tuple).
+    Does NOT support function calls, attribute access, or subscripts.
+    """
+    tree = ast.parse(expr, mode="eval")
+    return _eval_node(tree.body, variables)
+
+
+def _eval_node(node: ast.AST, variables: dict) -> object:
+    if isinstance(node, ast.Expression):
+        return _eval_node(node.body, variables)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id in variables:
+            return variables[node.id]
+        raise NameError(f"Undefined variable: {node.id}")
+    if isinstance(node, ast.List):
+        return [_eval_node(e, variables) for e in node.elts]
+    if isinstance(node, ast.Tuple):
+        return tuple(_eval_node(e, variables) for e in node.elts)
+    if isinstance(node, ast.BoolOp):
+        op_fn = _SAFE_OPS.get(type(node.op))
+        if op_fn is None:
+            raise ValueError(f"Unsupported bool op: {type(node.op).__name__}")
+        return op_fn([_eval_node(v, variables) for v in node.values])
+    if isinstance(node, ast.UnaryOp):
+        op_fn = _SAFE_UNARY.get(type(node.op))
+        if op_fn is None:
+            raise ValueError(f"Unsupported unary op: {type(node.op).__name__}")
+        return op_fn(_eval_node(node.operand, variables))
+    if isinstance(node, ast.Compare):
+        left = _eval_node(node.left, variables)
+        for op, comparator in zip(node.ops, node.comparators):
+            op_fn = _SAFE_COMPARE.get(type(op))
+            if op_fn is None:
+                raise ValueError(f"Unsupported compare op: {type(op).__name__}")
+            right = _eval_node(comparator, variables)
+            if not op_fn(left, right):
+                return False
+            left = right
+        return True
+    raise ValueError(f"Unsupported expression: {type(node).__name__}")
+
 
 class ScanPlanner:
     """Builds a task DAG from a profile + detected target.
@@ -387,7 +465,7 @@ class ScanPlanner:
             local_vars.setdefault("has_dockerfile", False)
             local_vars.setdefault("has_package_lock", False)
 
-            result = eval(condition, {"__builtins__": {}}, local_vars)  # noqa: S307
+            result = _safe_eval(condition, local_vars)
             return bool(result)
         except Exception:
             # If condition evaluation fails, skip the tool

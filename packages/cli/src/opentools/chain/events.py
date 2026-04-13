@@ -24,6 +24,15 @@ class StoreEventBus:
     def subscribe(self, event: EventName, handler: Handler) -> None:
         self._subscribers[event].append(handler)
 
+    def unsubscribe(self, event: EventName, handler: Handler) -> None:
+        """Remove a previously registered handler."""
+        handlers = self._subscribers.get(event)
+        if handlers:
+            try:
+                handlers.remove(handler)
+            except ValueError:
+                pass
+
     def emit(self, event: EventName, **kwargs) -> None:
         for handler in list(self._subscribers.get(event, [])):
             try:

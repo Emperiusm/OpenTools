@@ -26,6 +26,11 @@ from opentools.scanner.planner import ScanPlanner
 from opentools.scanner.target import TargetDetector, TargetValidator
 
 
+# Module-level registry for active scans — shared across all ScanAPI instances
+# so that pause/resume/cancel work from different request-scoped instances.
+_active_scans: dict[str, dict[str, Any]] = {}
+
+
 class ScanAPI:
     """Unified entry point for scan orchestration.
 
@@ -41,9 +46,6 @@ class ScanAPI:
         self._planner = ScanPlanner()
         self._detector = TargetDetector()
         self._validator = TargetValidator()
-
-        # Track active scans for pause/resume/cancel
-        self._active_scans: dict[str, dict[str, Any]] = {}
 
     async def plan(
         self,
@@ -194,7 +196,7 @@ class ScanAPI:
             pipeline=pipeline,
         )
 
-        self._active_scans[scan.id] = {
+        _active_scans[scan.id] = {
             "scan": scan,
             "cancel": cancel,
             "engine": engine,
@@ -204,13 +206,13 @@ class ScanAPI:
             engine.load_tasks(tasks)
             await engine.run()
             scan = engine.scan
-            self._active_scans[scan.id]["scan"] = scan
+            _active_scans[scan.id]["scan"] = scan
             return scan
         except Exception:
-            scan = scan.model_copy(update={"status": ScanStatus.FAILED})
+            scan.status = ScanStatus.FAILED
             return scan
         finally:
-            self._active_scans.pop(scan.id, None)
+            _active_scans.pop(scan.id, None)
 
     async def pause(self, scan_id: str) -> None:
         """Pause a running scan.
@@ -223,7 +225,7 @@ class ScanAPI:
         Raises:
             KeyError: If scan_id is not active.
         """
-        entry = self._active_scans.get(scan_id)
+        entry = _active_scans.get(scan_id)
         if entry is None:
             raise KeyError(f"No active scan with id '{scan_id}'")
 
@@ -240,7 +242,7 @@ class ScanAPI:
         Raises:
             KeyError: If scan_id is not active.
         """
-        entry = self._active_scans.get(scan_id)
+        entry = _active_scans.get(scan_id)
         if entry is None:
             raise KeyError(f"No active scan with id '{scan_id}'")
 
@@ -258,7 +260,7 @@ class ScanAPI:
         Raises:
             KeyError: If scan_id is not active.
         """
-        entry = self._active_scans.get(scan_id)
+        entry = _active_scans.get(scan_id)
         if entry is None:
             raise KeyError(f"No active scan with id '{scan_id}'")
 

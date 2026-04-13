@@ -2,50 +2,25 @@
 """Scan API routes — CRUD, control, and streaming endpoints.
 
 Follows the existing router pattern in app/routes/.
+Uses PostgreSQL via AsyncSession + ScanService (user-scoped).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import uuid
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_current_user
-from app.models import User
+from app.dependencies import get_current_user, get_db
+from app.models import ScanRecord, ScanTaskRecord, User
+from app.services.scan_service import ScanService
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
-
-# ---------------------------------------------------------------------------
-# Singleton store — one SQLite connection for the process lifetime
-# ---------------------------------------------------------------------------
-
-_scan_store: "SqliteScanStore | None" = None
-_scan_store_lock = asyncio.Lock()
-
-
-async def _get_scan_store():
-    """Lazy singleton — one SqliteScanStore for the process lifetime."""
-    global _scan_store
-    if _scan_store is not None:
-        return _scan_store
-    async with _scan_store_lock:
-        if _scan_store is not None:
-            return _scan_store
-        from pathlib import Path
-        from opentools.scanner.store import SqliteScanStore
-        db_path = Path.home() / ".opentools" / "scans.db"
-        if not db_path.exists():
-            return None
-        store = SqliteScanStore(db_path)
-        await store.initialize()
-        _scan_store = store
-        return store
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +92,29 @@ class ControlResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _scan_record_to_response(rec: ScanRecord) -> ScanResponse:
+    """Convert a ScanRecord ORM object to a ScanResponse."""
+    return ScanResponse(
+        id=rec.id,
+        engagement_id=rec.engagement_id,
+        target=rec.target,
+        target_type=rec.target_type,
+        profile=rec.profile,
+        mode=rec.mode,
+        status=rec.status,
+        tools_planned=ScanService.parse_json_list(rec.tools_planned),
+        finding_count=rec.finding_count,
+        created_at=rec.created_at.isoformat(),
+        started_at=rec.started_at.isoformat() if rec.started_at else None,
+        completed_at=rec.completed_at.isoformat() if rec.completed_at else None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -142,12 +140,14 @@ async def list_profiles(
 @router.post("", status_code=201)
 async def create_scan(
     body: ScanCreateRequest,
+    session: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Create and start a scan.
 
-    Plans the scan based on target detection and profile, persists it,
-    and returns the scan record. Execution is started in the background.
+    Plans the scan based on target detection and profile, persists it
+    to PostgreSQL, and returns the scan record. Execution is started in
+    the background.
     """
     from opentools.scanner.api import ScanAPI
     from opentools.scanner.models import ScanConfig, ScanMode
@@ -174,102 +174,104 @@ async def create_scan(
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    return ScanResponse(
+    # Persist to PostgreSQL via the service
+    svc = ScanService(session, user)
+    scan_record = ScanRecord(
         id=scan.id,
         engagement_id=scan.engagement_id,
         target=scan.target,
         target_type=scan.target_type.value,
+        resolved_path=getattr(scan, "resolved_path", None),
+        target_metadata=json.dumps(getattr(scan, "target_metadata", {})),
         profile=scan.profile,
+        profile_snapshot=json.dumps(getattr(scan, "profile_snapshot", {})),
         mode=scan.mode.value,
         status=scan.status.value,
-        tools_planned=scan.tools_planned,
+        config=json.dumps(config.model_dump()) if config else None,
+        tools_planned=json.dumps(scan.tools_planned),
+        tools_completed=json.dumps(getattr(scan, "tools_completed", [])),
+        tools_failed=json.dumps(getattr(scan, "tools_failed", [])),
         finding_count=scan.finding_count,
-        created_at=scan.created_at.isoformat(),
-        started_at=scan.started_at.isoformat() if scan.started_at else None,
-        completed_at=scan.completed_at.isoformat() if scan.completed_at else None,
+        estimated_duration_seconds=getattr(scan, "estimated_duration_seconds", None),
+        created_at=scan.created_at,
+        started_at=scan.started_at,
+        completed_at=scan.completed_at,
     )
+    await svc.persist_scan(scan_record)
+
+    # Persist tasks
+    task_records = [
+        ScanTaskRecord(
+            id=t.id,
+            scan_id=scan.id,
+            name=t.name,
+            tool=t.tool,
+            task_type=t.task_type.value,
+            command=getattr(t, "command", None),
+            mcp_server=getattr(t, "mcp_server", None),
+            mcp_tool=getattr(t, "mcp_tool", None),
+            mcp_args=json.dumps(getattr(t, "mcp_args", None)) if getattr(t, "mcp_args", None) else None,
+            depends_on=json.dumps(t.depends_on),
+            reactive_edges=json.dumps(getattr(t, "reactive_edges", [])),
+            status=t.status.value,
+            priority=t.priority,
+            tier=getattr(t, "tier", "normal") if isinstance(getattr(t, "tier", "normal"), str) else getattr(t, "tier", "normal").value,
+            resource_group=getattr(t, "resource_group", None),
+            retry_policy=json.dumps(getattr(t, "retry_policy", None)) if getattr(t, "retry_policy", None) else None,
+            cache_key=getattr(t, "cache_key", None),
+            parser=getattr(t, "parser", None),
+            tool_version=getattr(t, "tool_version", None),
+            started_at=getattr(t, "started_at", None),
+            completed_at=getattr(t, "completed_at", None),
+        )
+        for t in tasks
+    ]
+    await svc.persist_tasks(task_records)
+
+    return _scan_record_to_response(scan_record)
 
 
 @router.get("")
 async def list_scans(
     engagement_id: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """List scans, optionally filtered by engagement."""
-    store = await _get_scan_store()
-    if store is None:
-        return ScanListResponse(items=[], total=0)
-
-    scans = await store.list_scans(engagement_id=engagement_id)
-    scans.sort(key=lambda s: s.created_at, reverse=True)
-    scans = scans[:limit]
-
-    items = [
-        ScanResponse(
-            id=s.id,
-            engagement_id=s.engagement_id,
-            target=s.target,
-            target_type=s.target_type.value,
-            profile=s.profile,
-            mode=s.mode.value,
-            status=s.status.value,
-            tools_planned=s.tools_planned,
-            finding_count=s.finding_count,
-            created_at=s.created_at.isoformat(),
-            started_at=s.started_at.isoformat() if s.started_at else None,
-            completed_at=s.completed_at.isoformat() if s.completed_at else None,
-        )
-        for s in scans
-    ]
+    svc = ScanService(session, user)
+    scans = await svc.list_scans(engagement_id=engagement_id, limit=limit)
+    items = [_scan_record_to_response(s) for s in scans]
     return ScanListResponse(items=items, total=len(items))
 
 
 @router.get("/{scan_id}")
 async def get_scan(
     scan_id: str,
+    session: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Get scan detail."""
-    store = await _get_scan_store()
-    if store is None:
+    svc = ScanService(session, user)
+    rec = await svc.get_scan(scan_id)
+    if rec is None:
         raise HTTPException(status_code=404, detail="Scan not found")
-
-    scan = await store.get_scan(scan_id)
-    if scan is None:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    return ScanResponse(
-        id=scan.id,
-        engagement_id=scan.engagement_id,
-        target=scan.target,
-        target_type=scan.target_type.value,
-        profile=scan.profile,
-        mode=scan.mode.value,
-        status=scan.status.value,
-        tools_planned=scan.tools_planned,
-        finding_count=scan.finding_count,
-        created_at=scan.created_at.isoformat(),
-        started_at=scan.started_at.isoformat() if scan.started_at else None,
-        completed_at=scan.completed_at.isoformat() if scan.completed_at else None,
-    )
+    return _scan_record_to_response(rec)
 
 
 @router.get("/{scan_id}/tasks")
 async def get_scan_tasks(
     scan_id: str,
+    session: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Get task DAG with status for a scan."""
-    store = await _get_scan_store()
-    if store is None:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    scan = await store.get_scan(scan_id)
+    svc = ScanService(session, user)
+    scan = await svc.get_scan(scan_id)
     if scan is None:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    tasks = await store.get_scan_tasks(scan_id)
+    tasks = await svc.get_scan_tasks(scan_id)
     return {
         "scan_id": scan_id,
         "tasks": [
@@ -277,10 +279,10 @@ async def get_scan_tasks(
                 id=t.id,
                 name=t.name,
                 tool=t.tool,
-                task_type=t.task_type.value,
-                status=t.status.value,
+                task_type=t.task_type,
+                status=t.status,
                 priority=t.priority,
-                depends_on=t.depends_on,
+                depends_on=ScanService.parse_json_list(t.depends_on),
                 duration_ms=t.duration_ms,
             ).model_dump()
             for t in tasks
@@ -293,28 +295,24 @@ async def get_scan_tasks(
 async def get_scan_findings(
     scan_id: str,
     severity: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Get deduplicated findings for a scan."""
-    store = await _get_scan_store()
-    if store is None:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    findings = await store.get_scan_findings(scan_id)
-    if severity:
-        findings = [f for f in findings if f.severity_consensus == severity]
+    svc = ScanService(session, user)
+    findings = await svc.get_scan_findings(scan_id, severity=severity)
 
     return {
         "scan_id": scan_id,
         "findings": [
             FindingResponse(
-                id=f.id,
-                canonical_title=f.canonical_title,
-                severity_consensus=f.severity_consensus,
-                tools=f.tools,
-                confidence_score=f.confidence_score,
-                location_fingerprint=f.location_fingerprint,
-                suppressed=f.suppressed,
+                id=f["id"],
+                canonical_title=f["canonical_title"],
+                severity_consensus=f["severity_consensus"],
+                tools=f["tools"],
+                confidence_score=f["confidence_score"],
+                location_fingerprint=f["location_fingerprint"],
+                suppressed=f["suppressed"],
             ).model_dump()
             for f in findings
         ],
@@ -333,14 +331,15 @@ async def pause_scan(
     user: User = Depends(get_current_user),
 ):
     """Pause a running scan."""
-    from opentools.scanner.api import ScanAPI
+    from opentools.scanner.api import _active_scans
 
-    api = ScanAPI()
-    try:
-        await api.pause(scan_id)
-        return ControlResponse(scan_id=scan_id, status="paused", message="Scan paused")
-    except KeyError:
+    if scan_id not in _active_scans:
         raise HTTPException(status_code=404, detail="No active scan with this ID")
+    entry = _active_scans[scan_id]
+    engine = entry.get("engine")
+    if engine is not None:
+        await engine.pause()
+    return ControlResponse(scan_id=scan_id, status="paused", message="Scan paused")
 
 
 @router.post("/{scan_id}/resume")
@@ -349,14 +348,15 @@ async def resume_scan(
     user: User = Depends(get_current_user),
 ):
     """Resume a paused scan."""
-    from opentools.scanner.api import ScanAPI
+    from opentools.scanner.api import _active_scans
 
-    api = ScanAPI()
-    try:
-        await api.resume(scan_id)
-        return ControlResponse(scan_id=scan_id, status="resumed", message="Scan resumed")
-    except KeyError:
+    if scan_id not in _active_scans:
         raise HTTPException(status_code=404, detail="No active scan with this ID")
+    entry = _active_scans[scan_id]
+    engine = entry.get("engine")
+    if engine is not None:
+        await engine.resume()
+    return ControlResponse(scan_id=scan_id, status="resumed", message="Scan resumed")
 
 
 @router.post("/{scan_id}/cancel")
@@ -366,17 +366,18 @@ async def cancel_scan(
     user: User = Depends(get_current_user),
 ):
     """Cancel a running scan."""
-    from opentools.scanner.api import ScanAPI
+    from opentools.scanner.api import _active_scans
 
-    api = ScanAPI()
-    try:
-        await api.cancel(scan_id, reason)
-        return ControlResponse(
-            scan_id=scan_id, status="cancelled",
-            message=f"Scan cancelled: {reason}",
-        )
-    except KeyError:
+    if scan_id not in _active_scans:
         raise HTTPException(status_code=404, detail="No active scan with this ID")
+    entry = _active_scans[scan_id]
+    cancel_token = entry.get("cancel")
+    if cancel_token is not None:
+        await cancel_token.cancel(reason)
+    return ControlResponse(
+        scan_id=scan_id, status="cancelled",
+        message=f"Scan cancelled: {reason}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -389,17 +390,21 @@ async def stream_scan_events(
     scan_id: str,
     request: Request,
     last_event_id: Optional[str] = Query(None, alias="Last-Event-ID"),
+    session: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """SSE event stream for scan progress.
 
     Supports reconnection via Last-Event-ID header — events are replayed
-    from the persisted event store.
+    from the persisted PostgreSQL event store.
     """
     async def event_generator():
-        store = await _get_scan_store()
-        if store is None:
-            yield f"event: error\ndata: {json.dumps({'detail': 'Scan store not available'})}\n\n"
+        svc = ScanService(session, user)
+
+        # Verify scan belongs to user
+        scan = await svc.get_scan(scan_id)
+        if scan is None:
+            yield f"event: error\ndata: {json.dumps({'detail': 'Scan not found'})}\n\n"
             return
 
         # Determine starting sequence
@@ -415,21 +420,35 @@ async def stream_scan_events(
             if await request.is_disconnected():
                 break
 
-            events = await store.get_events_after(scan_id, last_seq)
+            events = await svc.get_scan_events_after(scan_id, last_seq)
             if events:
                 poll_interval = 0.5  # reset to aggressive on activity
             else:
                 poll_interval = min(poll_interval * 1.5, 5.0)  # back off when idle
 
             for event in events:
-                data = event.model_dump_json()
-                yield f"id: {event.sequence}\nevent: {event.type.value}\ndata: {data}\n\n"
+                data = json.dumps({
+                    "id": event.id,
+                    "scan_id": event.scan_id,
+                    "type": event.type,
+                    "sequence": event.sequence,
+                    "timestamp": event.timestamp.isoformat(),
+                    "task_id": event.task_id,
+                    "data": json.loads(event.data) if event.data else {},
+                    "tasks_total": event.tasks_total,
+                    "tasks_completed": event.tasks_completed,
+                    "tasks_running": event.tasks_running,
+                    "findings_total": event.findings_total,
+                    "elapsed_seconds": event.elapsed_seconds,
+                    "estimated_remaining_seconds": event.estimated_remaining_seconds,
+                })
+                yield f"id: {event.sequence}\nevent: {event.type}\ndata: {data}\n\n"
                 last_seq = event.sequence
 
             # Check if scan is finished
-            scan = await store.get_scan(scan_id)
-            if scan and scan.status.value in ("completed", "failed", "cancelled"):
-                yield f"event: scan_finished\ndata: {json.dumps({'status': scan.status.value})}\n\n"
+            scan = await svc.get_scan(scan_id)
+            if scan and scan.status in ("completed", "failed", "cancelled"):
+                yield f"event: scan_finished\ndata: {json.dumps({'status': scan.status})}\n\n"
                 break
 
             await asyncio.sleep(poll_interval)

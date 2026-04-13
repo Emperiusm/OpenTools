@@ -1,4 +1,21 @@
-"""Async subprocess execution with streaming output, timeout, and cancellation."""
+"""Async subprocess execution with streaming output, timeout, and cancellation.
+
+Design notes — pipe safety
+--------------------------
+Both stdout and stderr are drained concurrently in 4 KiB chunks.  This is
+critical: if only one pipe is read, the OS pipe buffer on the *other* pipe
+(typically 64 KiB on Linux, 4 KiB on some Windows configs) can fill up,
+causing the child process to block on ``write(2)`` and effectively deadlock.
+
+Stderr is capped at ``_MAX_STDERR_BYTES`` (4 MiB) to prevent a misbehaving
+tool from consuming unbounded memory with warning spam.  Excess stderr is
+silently discarded.
+
+Stdout is accumulated into a ``bytearray`` and streamed through ``on_output``
+in chunks.  For very large tool outputs (>100 MB), callers should consider
+writing to a temp file via ``on_output`` rather than relying on the returned
+``stdout`` string — see ``SubprocessResult.stdout_len`` to detect this.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +25,16 @@ from typing import Callable
 
 from pydantic import BaseModel
 
+# Cap stderr accumulation to prevent runaway memory from noisy tools.
+_MAX_STDERR_BYTES = 4 * 1024 * 1024  # 4 MiB
+_CHUNK_SIZE = 4096
+
 
 class SubprocessResult(BaseModel):
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    stdout_len: int = 0
     duration_ms: int = 0
     timed_out: bool = False
     cancelled: bool = False
@@ -24,7 +46,10 @@ async def run_streaming(
     timeout: int = 300,
     cancellation: object | None = None,  # CancellationToken
 ) -> SubprocessResult:
-    """Spawn an async subprocess and stream its stdout in 4096-byte chunks.
+    """Spawn an async subprocess and stream its stdout in 4 KiB chunks.
+
+    Both stdout and stderr are drained concurrently to prevent OS pipe
+    buffer deadlocks.  Stderr is capped at 4 MiB.
 
     Args:
         args: Command and arguments to execute.
@@ -54,24 +79,32 @@ async def run_streaming(
         )
 
     # --- reader coroutines ---------------------------------------------------
+    # Both pipes are read in chunked loops to keep the OS buffers drained.
+    # This prevents the classic deadlock where one full pipe blocks the child
+    # while we're waiting on the other.
 
-    stdout_chunks: list[bytes] = []
-    stderr_chunks: list[bytes] = []
+    stdout_buf = bytearray()
+    stderr_buf = bytearray()
 
     async def _read_stdout() -> None:
         assert proc.stdout is not None
         while True:
-            chunk = await proc.stdout.read(4096)
+            chunk = await proc.stdout.read(_CHUNK_SIZE)
             if not chunk:
                 break
-            stdout_chunks.append(chunk)
+            stdout_buf.extend(chunk)
             on_output(chunk)
 
     async def _read_stderr() -> None:
         assert proc.stderr is not None
-        data = await proc.stderr.read()
-        if data:
-            stderr_chunks.append(data)
+        while True:
+            chunk = await proc.stderr.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            # Cap stderr to prevent unbounded memory growth from noisy tools.
+            remaining = _MAX_STDERR_BYTES - len(stderr_buf)
+            if remaining > 0:
+                stderr_buf.extend(chunk[:remaining])
 
     # --- build task set ------------------------------------------------------
 
@@ -132,13 +165,14 @@ async def run_streaming(
 
     elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
 
-    stdout_text = b"".join(stdout_chunks).decode(errors="replace")
-    stderr_text = b"".join(stderr_chunks).decode(errors="replace")
+    stdout_text = stdout_buf.decode(errors="replace")
+    stderr_text = stderr_buf.decode(errors="replace")
 
     return SubprocessResult(
         exit_code=proc.returncode,
         stdout=stdout_text,
         stderr=stderr_text,
+        stdout_len=len(stdout_buf),
         duration_ms=elapsed_ms,
         timed_out=timed_out,
         cancelled=cancelled,

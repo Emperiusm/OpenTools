@@ -10,9 +10,10 @@ Each object should have at minimum a ``title`` or ``name`` field.
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from datetime import datetime, timezone
+
+import orjson
 from typing import Iterator
 
 from opentools.scanner.models import (
@@ -34,9 +35,9 @@ class GenericJsonParser:
     def validate(self, data: bytes) -> bool:
         """Accept any valid JSON (dict or list)."""
         try:
-            parsed = json.loads(data)
+            parsed = orjson.loads(data)
             return isinstance(parsed, (dict, list))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (orjson.JSONDecodeError, UnicodeDecodeError):
             return False
 
     def parse(
@@ -45,7 +46,7 @@ class GenericJsonParser:
         scan_id: str,
         scan_task_id: str,
     ) -> Iterator[RawFinding]:
-        parsed = json.loads(data)
+        parsed = orjson.loads(data)
         items = self._extract_items(parsed)
 
         for item in items:

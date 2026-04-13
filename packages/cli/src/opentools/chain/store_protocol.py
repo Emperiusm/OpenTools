@@ -278,6 +278,18 @@ class ChainStoreProtocol(Protocol):
         self, *, user_id: UUID | None, limit: int = 10
     ) -> list[LinkerRun]: ...
 
+    async def fetch_linker_run_by_id(
+        self, run_id: str, *, user_id: UUID | None
+    ) -> LinkerRun | None:
+        """Fetch a single linker run by its id.
+
+        Returns ``None`` if no run with that id exists (or if it belongs
+        to a different user in multi-tenant stores).  This is an indexed
+        point-lookup — callers should prefer it over
+        ``fetch_linker_runs`` + linear scan.
+        """
+        ...
+
     # --- Extraction state + parser output ---
 
     async def get_extraction_hash(

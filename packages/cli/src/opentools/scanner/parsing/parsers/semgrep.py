@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Iterator
+
+import orjson
 
 from opentools.scanner.models import (
     EvidenceQuality,
@@ -29,9 +30,9 @@ class SemgrepParser:
     def validate(self, data: bytes) -> bool:
         """Check that data is valid Semgrep JSON (has a ``results`` key)."""
         try:
-            parsed = json.loads(data)
+            parsed = orjson.loads(data)
             return isinstance(parsed, dict) and "results" in parsed
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (orjson.JSONDecodeError, UnicodeDecodeError):
             return False
 
     def parse(
@@ -41,7 +42,7 @@ class SemgrepParser:
         scan_task_id: str,
     ) -> Iterator[RawFinding]:
         """Parse Semgrep JSON output and yield RawFinding objects."""
-        parsed = json.loads(data)
+        parsed = orjson.loads(data)
         results = parsed.get("results", [])
 
         for result in results:

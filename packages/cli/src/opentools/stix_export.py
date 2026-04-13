@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import stix2
+import orjson
 
 from opentools.models import (
     Confidence,
@@ -68,12 +68,12 @@ _HASH_IOC_TYPES: frozenset[IOCType] = frozenset(
     [IOCType.HASH_MD5, IOCType.HASH_SHA256]
 )
 
-# TLP mapping
-_TLP_MAP: dict[str, stix2.MarkingDefinition] = {
-    "white": stix2.TLP_WHITE,
-    "green": stix2.TLP_GREEN,
-    "amber": stix2.TLP_AMBER,
-    "red": stix2.TLP_RED,
+# Well-known TLP marking definition IDs (STIX 2.1)
+_TLP_MAP: dict[str, str] = {
+    "white": "marking-definition--613f2e26-407d-48c7-9eca-b8e91df99dc9",
+    "green": "marking-definition--34098fce-860f-48ae-8e50-ebd3cc5e41da",
+    "amber": "marking-definition--f88d31f6-486f-44da-b317-01333bde0b82",
+    "red": "marking-definition--5e57c739-391a-4eb3-b6be-7d15ca92d5ed",
 }
 
 # Confidence mapping: Confidence enum → STIX integer (0-100)
@@ -211,6 +211,15 @@ def _get_confidence(ioc: IOC, finding_index: dict[str, Finding]) -> int:
     return _DEFAULT_CONFIDENCE
 
 
+def _format_dt(dt: datetime) -> str:
+    """Format a datetime as ISO 8601 with 'Z' suffix (UTC)."""
+    # Ensure UTC, strip tzinfo for clean isoformat, append 'Z'
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    # Use isoformat with millisecond precision and append Z
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -238,6 +247,7 @@ def export_stix(
         A JSON string containing a STIX 2.1 Bundle.
     """
     now = datetime.now(timezone.utc)
+    now_str = _format_dt(now)
 
     # Build finding index for confidence lookups
     finding_index: dict[str, Finding] = {}
@@ -246,9 +256,9 @@ def export_stix(
             finding_index[f.id] = f
 
     # Resolve optional TLP marking
-    tlp_marking: Optional[stix2.MarkingDefinition] = None
+    tlp_marking_id: Optional[str] = None
     if tlp:
-        tlp_marking = _TLP_MAP.get(tlp.lower())
+        tlp_marking_id = _TLP_MAP.get(tlp.lower())
 
     # Compute valid_until if requested
     valid_until: Optional[datetime] = None
@@ -257,21 +267,25 @@ def export_stix(
 
     # --- Identity (self-referential creator) ---
     identity_id = _deterministic_id("identity", "opentools")
-    identity = stix2.Identity(
-        id=identity_id,
-        name="OpenTools",
-        identity_class="organization",
-        description="OpenTools security toolkit",
-        created_by_ref=identity_id,
-    )
+    identity: dict = {
+        "type": "identity",
+        "spec_version": "2.1",
+        "id": identity_id,
+        "created": now_str,
+        "modified": now_str,
+        "name": "OpenTools",
+        "identity_class": "organization",
+        "description": "OpenTools security toolkit",
+        "created_by_ref": identity_id,
+    }
 
     # --- Per-IOC processing ---
-    all_objects: list = [identity]
+    all_objects: list[dict] = [identity]
     indicator_ids: list[str] = []
 
     # Track deduplicated Malware and Infrastructure SDOs
-    malware_by_family: dict[str, stix2.Malware] = {}
-    infra_by_key: dict[str, stix2.Infrastructure] = {}
+    malware_by_family: dict[str, dict] = {}
+    infra_by_key: dict[str, dict] = {}
 
     for ioc in iocs:
         pattern = _build_pattern(ioc)
@@ -280,22 +294,28 @@ def export_stix(
 
         indicator_id = _deterministic_id("indicator", ioc.ioc_type, ioc.value)
 
-        indicator_kwargs: dict = {
+        valid_from_dt = ioc.first_seen or now
+        indicator: dict = {
+            "type": "indicator",
+            "spec_version": "2.1",
             "id": indicator_id,
+            "created": now_str,
+            "modified": now_str,
             "name": f"{ioc.ioc_type.upper()}: {ioc.value}",
             "pattern": pattern,
             "pattern_type": "stix",
-            "valid_from": ioc.first_seen or now,
+            "valid_from": _format_dt(valid_from_dt),
             "labels": labels,
             "created_by_ref": identity_id,
             "confidence": confidence,
-            **({"valid_until": valid_until} if valid_until else {}),
         }
 
-        if tlp_marking is not None:
-            indicator_kwargs["object_marking_refs"] = [tlp_marking]
+        if valid_until is not None:
+            indicator["valid_until"] = _format_dt(valid_until)
 
-        indicator = stix2.Indicator(**indicator_kwargs)
+        if tlp_marking_id is not None:
+            indicator["object_marking_refs"] = [tlp_marking_id]
+
         all_objects.append(indicator)
         indicator_ids.append(indicator_id)
 
@@ -306,26 +326,34 @@ def export_stix(
                 family_key = family.lower()
                 if family_key not in malware_by_family:
                     malware_id = _deterministic_id("malware", family_key)
-                    malware_obj = stix2.Malware(
-                        id=malware_id,
-                        name=family,
-                        is_family=True,
-                        created_by_ref=identity_id,
-                    )
+                    malware_obj: dict = {
+                        "type": "malware",
+                        "spec_version": "2.1",
+                        "id": malware_id,
+                        "created": now_str,
+                        "modified": now_str,
+                        "name": family,
+                        "is_family": True,
+                        "created_by_ref": identity_id,
+                    }
                     malware_by_family[family_key] = malware_obj
                     all_objects.append(malware_obj)
 
-                malware_obj = malware_by_family[family_key]
+                malware_ref = malware_by_family[family_key]
                 rel_id = _deterministic_id(
-                    "relationship", "indicates", indicator_id, malware_obj.id
+                    "relationship", "indicates", indicator_id, malware_ref["id"]
                 )
-                rel = stix2.Relationship(
-                    id=rel_id,
-                    relationship_type="indicates",
-                    source_ref=indicator_id,
-                    target_ref=malware_obj.id,
-                    created_by_ref=identity_id,
-                )
+                rel: dict = {
+                    "type": "relationship",
+                    "spec_version": "2.1",
+                    "id": rel_id,
+                    "created": now_str,
+                    "modified": now_str,
+                    "relationship_type": "indicates",
+                    "source_ref": indicator_id,
+                    "target_ref": malware_ref["id"],
+                    "created_by_ref": identity_id,
+                }
                 all_objects.append(rel)
 
         # --- Infrastructure enrichment (network IOCs only) ---
@@ -335,42 +363,58 @@ def export_stix(
                 infra_key = f"{infra_type}:{ioc.value}"
                 if infra_key not in infra_by_key:
                     infra_id = _deterministic_id("infrastructure", infra_key)
-                    infra_obj = stix2.Infrastructure(
-                        id=infra_id,
-                        name=f"{infra_type.replace('-', ' ').title()} Server: {ioc.value}",
-                        infrastructure_types=[infra_type],
-                        created_by_ref=identity_id,
-                    )
+                    infra_obj: dict = {
+                        "type": "infrastructure",
+                        "spec_version": "2.1",
+                        "id": infra_id,
+                        "created": now_str,
+                        "modified": now_str,
+                        "name": f"{infra_type.replace('-', ' ').title()} Server: {ioc.value}",
+                        "infrastructure_types": [infra_type],
+                        "created_by_ref": identity_id,
+                    }
                     infra_by_key[infra_key] = infra_obj
                     all_objects.append(infra_obj)
 
-                infra_obj = infra_by_key[infra_key]
+                infra_ref = infra_by_key[infra_key]
                 rel_id = _deterministic_id(
-                    "relationship", "uses", indicator_id, infra_obj.id
+                    "relationship", "uses", indicator_id, infra_ref["id"]
                 )
-                rel = stix2.Relationship(
-                    id=rel_id,
-                    relationship_type="uses",
-                    source_ref=indicator_id,
-                    target_ref=infra_obj.id,
-                    created_by_ref=identity_id,
-                )
+                rel = {
+                    "type": "relationship",
+                    "spec_version": "2.1",
+                    "id": rel_id,
+                    "created": now_str,
+                    "modified": now_str,
+                    "relationship_type": "uses",
+                    "source_ref": indicator_id,
+                    "target_ref": infra_ref["id"],
+                    "created_by_ref": identity_id,
+                }
                 all_objects.append(rel)
 
     # --- Report ---
     # object_refs must not be empty per STIX spec
     report_refs = indicator_ids if indicator_ids else [identity_id]
     report_id = _deterministic_id("report", engagement.id)
-    report = stix2.Report(
-        id=report_id,
-        name=f"IOC Export — {engagement.name}",
-        description=f"STIX 2.1 IOC export for engagement: {engagement.name} (target: {engagement.target})",
-        published=now,
-        object_refs=report_refs,
-        created_by_ref=identity_id,
-    )
+    report: dict = {
+        "type": "report",
+        "spec_version": "2.1",
+        "id": report_id,
+        "created": now_str,
+        "modified": now_str,
+        "name": f"IOC Export \u2014 {engagement.name}",
+        "description": f"STIX 2.1 IOC export for engagement: {engagement.name} (target: {engagement.target})",
+        "published": now_str,
+        "object_refs": report_refs,
+        "created_by_ref": identity_id,
+    }
     all_objects.append(report)
 
     # --- Bundle ---
-    bundle = stix2.Bundle(*all_objects, allow_custom=True)
-    return bundle.serialize(pretty=False)
+    bundle: dict = {
+        "type": "bundle",
+        "id": f"bundle--{uuid.uuid4()}",
+        "objects": all_objects,
+    }
+    return orjson.dumps(bundle).decode()

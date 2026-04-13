@@ -236,18 +236,8 @@ class ChainService:
         user_id: uuid.UUID,
         run_id: str,
     ) -> dict[str, Any] | None:
-        """Fetch one linker run by id, scoped to the user.
-
-        The protocol exposes ``fetch_linker_runs(limit=...)`` for the
-        history list but not a point-lookup. We pull the most recent
-        ``limit=1000`` runs for the user and scan for ``run_id``; in
-        practice the linker-run history is small (and the route is
-        only hit interactively to poll one run), so the scan is fine.
-        """
+        """Fetch one linker run by id, scoped to the user."""
         store = chain_store_from_session(session)
         await store.initialize()
-        runs = await store.fetch_linker_runs(user_id=user_id, limit=1000)
-        for r in runs:
-            if r.id == run_id:
-                return linker_run_to_dict(r)
-        return None
+        run = await store.fetch_linker_run_by_id(run_id, user_id=user_id)
+        return linker_run_to_dict(run) if run is not None else None

@@ -93,7 +93,10 @@ class OpenAIAPIProvider:
         if self._call_fn is not None:
             return await self._call_fn(prompt)
         # Production path — only exercised in smoke tests (ENABLE_LLM_SMOKE_TESTS=1)
-        import openai
+        try:
+            import openai
+        except ImportError:
+            raise ImportError("OpenAI provider requires: pip install opentools[openai]") from None
 
         client = self._client or openai.AsyncOpenAI()
         response = await client.chat.completions.create(

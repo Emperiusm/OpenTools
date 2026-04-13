@@ -146,7 +146,7 @@ class DashboardApp(App):
         except Exception:
             pass
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True)
     def _do_refresh(self) -> None:
         # Determine what data the visible tab needs
         try:

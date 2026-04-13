@@ -133,19 +133,39 @@ class EngagementStore:
     def get_summary(self, engagement_id: str) -> EngagementSummary:
         engagement = self.get(engagement_id)
 
-        # Finding counts by severity (exclude false positives)
-        rows = self._conn.execute(
+        # Single compound query replaces 8 separate round-trips
+        row = self._conn.execute(
             """
-            SELECT severity, COUNT(*) as cnt
-            FROM findings
-            WHERE engagement_id = ? AND deleted_at IS NULL
-            GROUP BY severity
+            SELECT
+                (SELECT COUNT(*) FROM findings
+                 WHERE engagement_id = ?1 AND deleted_at IS NULL AND severity = 'critical') AS sev_critical,
+                (SELECT COUNT(*) FROM findings
+                 WHERE engagement_id = ?1 AND deleted_at IS NULL AND severity = 'high') AS sev_high,
+                (SELECT COUNT(*) FROM findings
+                 WHERE engagement_id = ?1 AND deleted_at IS NULL AND severity = 'medium') AS sev_medium,
+                (SELECT COUNT(*) FROM findings
+                 WHERE engagement_id = ?1 AND deleted_at IS NULL AND severity = 'low') AS sev_low,
+                (SELECT COUNT(*) FROM findings
+                 WHERE engagement_id = ?1 AND deleted_at IS NULL AND severity = 'info') AS sev_info,
+                (SELECT COUNT(*) FROM artifacts WHERE engagement_id = ?1) AS artifact_count,
+                (SELECT COUNT(*) FROM timeline_events WHERE engagement_id = ?1) AS timeline_event_count,
+                (SELECT COUNT(*) FROM findings
+                 WHERE engagement_id = ?1 AND false_positive = 1) AS false_positive_count
             """,
             (engagement_id,),
-        ).fetchall()
-        finding_counts: dict[str, int] = {r["severity"]: r["cnt"] for r in rows}
+        ).fetchone()
 
-        # Finding counts by status
+        finding_counts: dict[str, int] = {}
+        for sev in ("critical", "high", "medium", "low", "info"):
+            cnt = row[f"sev_{sev}"]
+            if cnt:
+                finding_counts[sev] = cnt
+
+        artifact_count: int = row["artifact_count"]
+        timeline_event_count: int = row["timeline_event_count"]
+        false_positive_count: int = row["false_positive_count"]
+
+        # Status and phase counts (two lightweight GROUP BY queries)
         rows = self._conn.execute(
             """
             SELECT status, COUNT(*) as cnt
@@ -157,7 +177,6 @@ class EngagementStore:
         ).fetchall()
         finding_counts_by_status: dict[str, int] = {r["status"]: r["cnt"] for r in rows}
 
-        # Finding counts by phase
         rows = self._conn.execute(
             """
             SELECT phase, COUNT(*) as cnt
@@ -180,21 +199,6 @@ class EngagementStore:
             (engagement_id,),
         ).fetchall()
         ioc_counts_by_type: dict[str, int] = {r["ioc_type"]: r["cnt"] for r in rows}
-
-        artifact_count: int = self._conn.execute(
-            "SELECT COUNT(*) FROM artifacts WHERE engagement_id = ?",
-            (engagement_id,),
-        ).fetchone()[0]
-
-        timeline_event_count: int = self._conn.execute(
-            "SELECT COUNT(*) FROM timeline_events WHERE engagement_id = ?",
-            (engagement_id,),
-        ).fetchone()[0]
-
-        false_positive_count: int = self._conn.execute(
-            "SELECT COUNT(*) FROM findings WHERE engagement_id = ? AND false_positive = 1",
-            (engagement_id,),
-        ).fetchone()[0]
 
         # Severity conflicts: findings whose severity_by_tool disagrees
         rows = self._conn.execute(

@@ -10,18 +10,9 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "sqlite-utils>=3.37",
     "jinja2>=3.1.6",
-    "stix2>=3.0",
-    "textual>=8.0",
     "httpx>=0.28",
     "rustworkx>=0.15.0",
-    "ioc-finder>=7.2.0",
     "tldextract>=5.1.0",
-    "taxii2-client>=2.3.0",
-    "instructor>=1.5.0",
-    "anthropic>=0.40.0",
-    "openai>=1.50.0",
-    "ollama>=0.3.0",
-    "claude-agent-sdk>=0.1.0",
     "aiolimiter>=1.2.0",
     "tenacity>=9.0.0",
     "orjson>=3.10.0",
@@ -30,8 +21,30 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dashboard = [
+    "textual>=8.0",
+]
+llm = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "ollama>=0.3.0",
+    "claude-agent-sdk>=0.1.0",
+]
+anthropic = [
+    "anthropic>=0.40.0",
+]
+openai = [
+    "openai>=1.50.0",
+]
+ollama = [
+    "ollama>=0.3.0",
+]
+all = [
+    "opentools[dashboard,llm]",
+]
 dev = [
     "pytest-xdist>=3",
+    "opentools[all]",
 ]
 
 [project.scripts]

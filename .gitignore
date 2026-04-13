@@ -25,3 +25,14 @@ node_modules/
 
 # Git worktrees
 .worktrees/
+
+# Profiling output
+profiles/
+
+# TypeScript build output
+*.tsbuildinfo
+.tsc-out/
+vite.config.d.ts
+
+# Claude Code local state
+.claude/
