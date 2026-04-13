@@ -111,6 +111,8 @@ DEFAULT_PROFILES: dict[TargetType, str] = {
 
 _PROFILES_DIR = Path(__file__).parent / "profiles"
 
+_profile_cache: dict[str, ScanProfile] = {}
+
 
 def list_builtin_profiles() -> list[str]:
     """Return names of all built-in profiles (without .yaml extension)."""
@@ -123,25 +125,31 @@ def list_builtin_profiles() -> list[str]:
 
 
 def load_builtin_profile(name: str) -> ScanProfile:
-    """Load a built-in profile by name.
+    """Load a built-in profile by name, caching the parsed result.
 
     Args:
         name: Profile name (e.g. "source-quick"). Hyphens are converted
             to underscores for filename lookup.
 
     Returns:
-        Parsed ScanProfile.
+        Parsed ScanProfile (cached after first load).
 
     Raises:
         FileNotFoundError: If the profile YAML does not exist.
     """
+    cached = _profile_cache.get(name)
+    if cached is not None:
+        return cached
+
     filename = name.replace("-", "_") + ".yaml"
     filepath = _PROFILES_DIR / filename
     if not filepath.exists():
         raise FileNotFoundError(
             f"Built-in profile '{name}' not found at {filepath}"
         )
-    return load_profile_yaml(filepath.read_text(encoding="utf-8"))
+    profile = load_profile_yaml(filepath.read_text(encoding="utf-8"))
+    _profile_cache[name] = profile
+    return profile
 
 
 def load_profile_yaml(yaml_content: str) -> ScanProfile:

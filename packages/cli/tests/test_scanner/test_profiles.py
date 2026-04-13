@@ -250,3 +250,17 @@ phases:
             assert profile.id == name, f"Profile {name} has mismatched id: {profile.id}"
             assert len(profile.target_types) >= 1
             assert len(profile.phases) >= 1
+
+
+def test_load_builtin_profile_is_cached():
+    """Loading the same profile twice should return the same object (cached)."""
+    from opentools.scanner.profiles import load_builtin_profile, _profile_cache
+
+    # Clear any prior cache state
+    _profile_cache.clear()
+
+    profile_a = load_builtin_profile("web-full")
+    profile_b = load_builtin_profile("web-full")
+
+    assert profile_a is profile_b, "Expected cached (identical) object"
+    assert len(_profile_cache) == 1
