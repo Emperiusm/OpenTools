@@ -144,6 +144,7 @@ class ScanEngine:
     async def _schedule_loop(self) -> None:
         """Main scheduling loop: dispatch ready tasks, wait for completion."""
         in_flight: dict[str, asyncio.Task] = {}
+        future_to_task: dict[asyncio.Task, str] = {}
 
         while True:
             if self._cancellation.is_cancelled:
@@ -177,6 +178,7 @@ class ScanEngine:
                 )
                 coro = self._execute_task(scan_task, executor)
                 in_flight[scan_task.id] = asyncio.ensure_future(coro)
+                future_to_task[in_flight[scan_task.id]] = scan_task.id
 
             if not in_flight:
                 # Process remaining pipeline results before exiting
@@ -188,11 +190,7 @@ class ScanEngine:
             )
 
             for completed_future in done:
-                task_id = None
-                for tid, fut in in_flight.items():
-                    if fut is completed_future:
-                        task_id = tid
-                        break
+                task_id = future_to_task.pop(completed_future, None)
                 if task_id is None:
                     continue
 
