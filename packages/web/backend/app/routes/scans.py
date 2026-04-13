@@ -410,11 +410,17 @@ async def stream_scan_events(
             except ValueError:
                 pass
 
+        poll_interval = 0.5
         while True:
             if await request.is_disconnected():
                 break
 
             events = await store.get_events_after(scan_id, last_seq)
+            if events:
+                poll_interval = 0.5  # reset to aggressive on activity
+            else:
+                poll_interval = min(poll_interval * 1.5, 5.0)  # back off when idle
+
             for event in events:
                 data = event.model_dump_json()
                 yield f"id: {event.sequence}\nevent: {event.type.value}\ndata: {data}\n\n"
@@ -426,7 +432,7 @@ async def stream_scan_events(
                 yield f"event: scan_finished\ndata: {json.dumps({'status': scan.status.value})}\n\n"
                 break
 
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(poll_interval)
 
     return StreamingResponse(
         event_generator(),
