@@ -13,6 +13,9 @@ interface GraphNode {
   fx?: number | undefined
   fy?: number | undefined
   neighborCount?: number
+  created_at?: string | null
+  engagement_id?: string
+  pivotality?: number
 }
 
 interface GraphLink {
@@ -32,11 +35,20 @@ interface GraphData {
   links: GraphLink[]
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   data: GraphData
   selectedNodeId: string | null
   selectedLinkId: string | null
-}>()
+  timeRange?: { start: Date; end: Date } | null
+  layoutMode?: 'force' | 'killchain'
+  colorMode?: 'severity' | 'engagement'
+  engagementColors?: Record<string, string>
+}>(), {
+  timeRange: null,
+  layoutMode: 'force',
+  colorMode: 'severity',
+  engagementColors: () => ({}),
+})
 
 const emit = defineEmits<{
   (e: 'node-click', node: GraphNode): void
@@ -72,6 +84,37 @@ const MITRE_ABBREVS: Record<string, string> = {
   'impact': 'IM',
 }
 
+const KILL_CHAIN_PHASES = [
+  'reconnaissance', 'resource-development', 'initial-access', 'execution',
+  'persistence', 'privilege-escalation', 'defense-evasion', 'credential-access',
+  'discovery', 'lateral-movement', 'collection', 'command-and-control',
+  'exfiltration', 'impact',
+]
+
+function applyKillChainLayout() {
+  if (!graph || !container.value) return
+  const width = container.value.clientWidth
+  const laneCount = KILL_CHAIN_PHASES.length + 1
+  const laneWidth = width / laneCount
+
+  const nodes = graph.graphData().nodes as GraphNode[]
+  for (const n of nodes) {
+    const phaseIdx = n.phase ? KILL_CHAIN_PHASES.indexOf(n.phase) : -1
+    const lane = phaseIdx >= 0 ? phaseIdx : KILL_CHAIN_PHASES.length
+    n.fx = laneWidth * lane + laneWidth / 2
+  }
+  graph.d3ReheatSimulation()
+}
+
+function clearKillChainLayout() {
+  if (!graph) return
+  const nodes = graph.graphData().nodes as GraphNode[]
+  for (const n of nodes) {
+    n.fx = undefined
+  }
+  graph.d3ReheatSimulation()
+}
+
 function getNodeId(ref: string | GraphNode): string {
   return typeof ref === 'string' ? ref : ref.id
 }
@@ -92,10 +135,30 @@ function initGraph() {
     .linkTarget('target')
     .nodeCanvasObject((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const n = node as GraphNode
+
+      // Time range visibility
+      if (props.timeRange && n.created_at) {
+        const t = new Date(n.created_at).getTime()
+        if (t < props.timeRange.start.getTime() || t > props.timeRange.end.getTime()) {
+          return  // Don't render — outside time window
+        }
+      }
+
       const connCount = countConnections(n.id)
       const radius = Math.min(4 + connCount * 0.8, 12)
-      const color = SEVERITY_COLORS[n.severity] || '#95a5a6'
+      const color = props.colorMode === 'engagement' && n.engagement_id
+        ? (props.engagementColors[n.engagement_id] || '#95a5a6')
+        : (SEVERITY_COLORS[n.severity] || '#95a5a6')
       const isSelected = n.id === props.selectedNodeId
+
+      // Pivotality glow
+      if (n.pivotality && n.pivotality > 0.1) {
+        const glowRadius = radius + 4 + n.pivotality * 8
+        ctx.beginPath()
+        ctx.arc(node.x, node.y, glowRadius, 0, 2 * Math.PI)
+        ctx.fillStyle = `rgba(251, 191, 36, ${n.pivotality * 0.3})`
+        ctx.fill()
+      }
 
       // Circle
       ctx.beginPath()
@@ -112,6 +175,16 @@ function initGraph() {
         ctx.arc(node.x, node.y, radius + 1 / globalScale, 0, 2 * Math.PI)
         ctx.strokeStyle = color
         ctx.lineWidth = 1 / globalScale
+        ctx.stroke()
+      }
+
+      // Severity ring in engagement color mode
+      if (props.colorMode === 'engagement') {
+        const sevColor = SEVERITY_COLORS[n.severity] || '#95a5a6'
+        ctx.beginPath()
+        ctx.arc(node.x, node.y, radius + 2 / globalScale, 0, 2 * Math.PI)
+        ctx.strokeStyle = sevColor
+        ctx.lineWidth = 1.5 / globalScale
         ctx.stroke()
       }
 
@@ -165,6 +238,20 @@ function initGraph() {
       const tgt = link.target
       if (!src.x || !tgt.x) return
 
+      // Hide edges where either endpoint is outside time window
+      if (props.timeRange) {
+        const srcNode = src as GraphNode
+        const tgtNode = tgt as GraphNode
+        if (srcNode.created_at) {
+          const st = new Date(srcNode.created_at).getTime()
+          if (st < props.timeRange.start.getTime() || st > props.timeRange.end.getTime()) return
+        }
+        if (tgtNode.created_at) {
+          const tt = new Date(tgtNode.created_at).getTime()
+          if (tt < props.timeRange.start.getTime() || tt > props.timeRange.end.getTime()) return
+        }
+      }
+
       const isSelected = l.id === props.selectedLinkId
 
       // Style by status
@@ -172,9 +259,33 @@ function initGraph() {
       const isCandidate = l.status === 'candidate'
       const isRejected = l.status === 'rejected' || l.status === 'user_rejected'
 
+      // Draw path — bezier in kill chain mode, straight in force mode
       ctx.beginPath()
-      ctx.moveTo(src.x, src.y)
-      ctx.lineTo(tgt.x, tgt.y)
+      if (props.layoutMode === 'killchain') {
+        const dx = tgt.x - src.x
+        const dy = tgt.y - src.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const midX = (src.x + tgt.x) / 2
+        const midY = (src.y + tgt.y) / 2
+
+        ctx.moveTo(src.x, src.y)
+        if (Math.abs(dx) < 30) {
+          // Intra-lane: arc
+          const cpX = midX + dist * 0.3
+          ctx.quadraticCurveTo(cpX, midY, tgt.x, tgt.y)
+        } else {
+          // Inter-lane: bezier
+          const cpOffset = Math.min(dist * 0.2, 50)
+          ctx.bezierCurveTo(
+            src.x + dx * 0.25, src.y - cpOffset,
+            tgt.x - dx * 0.25, tgt.y - cpOffset,
+            tgt.x, tgt.y
+          )
+        }
+      } else {
+        ctx.moveTo(src.x, src.y)
+        ctx.lineTo(tgt.x, tgt.y)
+      }
 
       if (isRejected) {
         ctx.strokeStyle = 'rgba(231, 76, 60, 0.4)'
@@ -242,6 +353,44 @@ function initGraph() {
     .onBackgroundClick(() => emit('background-click'))
     .cooldownTicks(100)
     .warmupTicks(50)
+    .onRenderFramePost((ctx: CanvasRenderingContext2D, globalScale: number) => {
+      if (props.layoutMode !== 'killchain' || !container.value) return
+
+      const width = container.value.clientWidth
+      const height = container.value.clientHeight
+      const laneCount = KILL_CHAIN_PHASES.length + 1
+      const laneWidth = width / laneCount
+
+      ctx.save()
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+
+      for (let i = 0; i <= laneCount; i++) {
+        const x = i * laneWidth
+        ctx.beginPath()
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x, height)
+        ctx.strokeStyle = 'rgba(150, 150, 150, 0.2)'
+        ctx.setLineDash([4, 4])
+        ctx.lineWidth = 1
+        ctx.stroke()
+        ctx.setLineDash([])
+
+        if (i < KILL_CHAIN_PHASES.length) {
+          const label = MITRE_ABBREVS[KILL_CHAIN_PHASES[i]] || KILL_CHAIN_PHASES[i].slice(0, 4)
+          ctx.font = '10px sans-serif'
+          ctx.fillStyle = 'rgba(150, 150, 150, 0.6)'
+          ctx.textAlign = 'center'
+          ctx.fillText(label, x + laneWidth / 2, 14)
+        } else if (i === KILL_CHAIN_PHASES.length) {
+          ctx.font = '10px sans-serif'
+          ctx.fillStyle = 'rgba(150, 150, 150, 0.6)'
+          ctx.textAlign = 'center'
+          ctx.fillText('Other', x + laneWidth / 2, 14)
+        }
+      }
+
+      ctx.restore()
+    })
 
   // Zoom to fit after initial layout
   setTimeout(() => graph?.zoomToFit(400, 50), 500)
@@ -282,6 +431,14 @@ watch(() => props.data, (newData) => {
     updateData(newData)
   }
 }, { deep: true })
+
+watch(() => props.layoutMode, (mode) => {
+  if (mode === 'killchain') {
+    applyKillChainLayout()
+  } else {
+    clearKillChainLayout()
+  }
+})
 
 onMounted(() => {
   nextTick(() => initGraph())
