@@ -10,8 +10,8 @@ interface GraphNode {
   phase: string | null
   x?: number
   y?: number
-  fx?: number | null
-  fy?: number | null
+  fx?: number | undefined
+  fy?: number | undefined
   neighborCount?: number
 }
 
@@ -85,7 +85,7 @@ function countConnections(nodeId: string): number {
 function initGraph() {
   if (!container.value) return
 
-  graph = ForceGraph()(container.value)
+  graph = new ForceGraph(container.value)
     .graphData(props.data)
     .nodeId('id')
     .linkSource('source')
@@ -268,8 +268,8 @@ function updateData(newData: GraphData) {
       n.fy = pos.y
       // Unpin after short delay to let simulation settle
       setTimeout(() => {
-        n.fx = null
-        n.fy = null
+        n.fx = undefined
+        n.fy = undefined
       }, 1000)
     }
   }
