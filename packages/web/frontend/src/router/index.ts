@@ -11,6 +11,7 @@ const router = createRouter({
     { path: '/engagements/new', name: 'engagement-create', component: () => import('@/views/EngagementCreateView.vue') },
     { path: '/engagements/:id', name: 'engagement-detail', component: () => import('@/views/EngagementDetailView.vue') },
     { path: '/findings/:id', name: 'finding-detail', component: () => import('@/views/FindingDetailView.vue') },
+    { path: '/engagements/:id/chain', name: 'engagement-chain', component: () => import('@/views/ChainGraphView.vue') },
     { path: '/recipes', name: 'recipes', component: () => import('@/views/RecipeListView.vue') },
     { path: '/recipes/:id/run', name: 'recipe-run', component: () => import('@/views/RecipeRunnerView.vue') },
     { path: '/containers', name: 'containers', component: () => import('@/views/ContainerStatusView.vue') },
