@@ -75,6 +75,10 @@ class ScanEngine:
         self._kill_chain = KillChainState()
         self._max_mutation_spawns: int = 100
 
+        # Approval gate (optional — engine works without it)
+        self._approval_registry: Any | None = None
+        self._approval_store: Any | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -139,6 +143,14 @@ class ScanEngine:
     def set_max_mutation_spawns(self, limit: int) -> None:
         """Set the global budget for mutation-spawned tasks."""
         self._max_mutation_spawns = limit
+
+    def set_approval_registry(self, registry: Any) -> None:
+        """Set the ApprovalRegistry for HITL gate support."""
+        self._approval_registry = registry
+
+    def set_approval_store(self, store: Any) -> None:
+        """Set the store for persisting gate state (must have update_task_status and get_task_status)."""
+        self._approval_store = store
 
     @property
     def kill_chain_state(self) -> KillChainState:
@@ -239,11 +251,22 @@ class ScanEngine:
     async def _execute_task(
         self, task: ScanTask, executor: TaskExecutor
     ) -> TaskOutput:
-        """Check cache → acquire resource → dispatch to executor → release."""
+        """Check cache → gate phase → acquire resource → dispatch to executor → release."""
         # Cache check
         if task.cache_key and task.cache_key in self._cache:
             return self._cache[task.cache_key]
 
+        # --- GATE PHASE (if requires_approval and registry configured) ---
+        if (
+            task.requires_approval is not None
+            and self._approval_registry is not None
+            and self._approval_store is not None
+        ):
+            gate_result = await self._run_approval_gate(task)
+            if gate_result is not None:
+                return gate_result  # rejected or expired — don't execute
+
+        # --- NORMAL EXECUTION ---
         resource_group = task.resource_group or task.task_type.value
 
         if task.retry_policy is not None:
@@ -273,6 +296,83 @@ class ScanEngine:
             self._cache[task.cache_key] = output.model_copy(update={"cached": True})
 
         return output
+
+    # ------------------------------------------------------------------
+    # Approval gate
+    # ------------------------------------------------------------------
+
+    async def _run_approval_gate(self, task: ScanTask) -> TaskOutput | None:
+        """Execute the approval gate phase.
+        Returns None if approved (proceed to executor).
+        Returns TaskOutput if rejected/expired (stop)."""
+        import uuid
+        from datetime import datetime, timedelta, timezone
+
+        timeout = task.requires_approval.timeout_seconds
+        ticket_id = f"gate-{task.id}-{uuid.uuid4().hex[:8]}"
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=timeout)
+
+        # 1. PERSIST to store (source of truth)
+        task.approval_ticket_id = ticket_id
+        task.approval_expires_at = expires_at
+        await self._approval_store.update_task_status(
+            task.id, TaskStatus.AWAITING_APPROVAL.value,
+            approval_ticket_id=ticket_id,
+            approval_expires_at=expires_at.isoformat(),
+        )
+
+        # 2. Publish event (best-effort — dict payload, not ProgressEvent)
+        try:
+            await self._event_bus.publish({
+                "type": "approval_required",
+                "scan_id": self.scan.id,
+                "task_id": task.id,
+                "ticket_id": ticket_id,
+                "tool": task.tool,
+                "command": task.command,
+                "description": task.requires_approval.description,
+                "expires_at": expires_at.isoformat(),
+            })
+        except Exception:
+            pass
+
+        # 3. Register event and sleep
+        event = self._approval_registry.register(ticket_id)
+
+        remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            self._approval_registry.remove(ticket_id)
+            await self._approval_store.update_task_status(task.id, "approval_expired")
+            return TaskOutput(exit_code=2, stderr="approval expired before gate could sleep")
+
+        # Acquire from unlimited approval_gate group while sleeping
+        await self._pool.acquire(task.id, task.priority, "approval_gate")
+        try:
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                pass  # handled by DB read below
+        finally:
+            self._pool.release("approval_gate")
+            self._approval_registry.remove(ticket_id)
+
+        # 4. READ TRUTH from store (never trust why we woke up)
+        stored = await self._approval_store.get_task_status(task.id)
+        if stored is not None:
+            status = stored.get("status", "")
+        else:
+            status = ""
+
+        if status == "approved":
+            task.status = TaskStatus.RUNNING
+            return None  # proceed to executor
+
+        if status == "rejected":
+            return TaskOutput(exit_code=1, stderr="rejected by operator")
+
+        # Timeout or unknown state
+        await self._approval_store.update_task_status(task.id, "approval_expired")
+        return TaskOutput(exit_code=2, stderr="approval expired")
 
     # ------------------------------------------------------------------
     # State management
