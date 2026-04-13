@@ -21,6 +21,32 @@ from app.models import User
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
+# ---------------------------------------------------------------------------
+# Singleton store — one SQLite connection for the process lifetime
+# ---------------------------------------------------------------------------
+
+_scan_store: "SqliteScanStore | None" = None
+_scan_store_lock = asyncio.Lock()
+
+
+async def _get_scan_store():
+    """Lazy singleton — one SqliteScanStore for the process lifetime."""
+    global _scan_store
+    if _scan_store is not None:
+        return _scan_store
+    async with _scan_store_lock:
+        if _scan_store is not None:
+            return _scan_store
+        from pathlib import Path
+        from opentools.scanner.store import SqliteScanStore
+        db_path = Path.home() / ".opentools" / "scans.db"
+        if not db_path.exists():
+            return None
+        store = SqliteScanStore(db_path)
+        await store.initialize()
+        _scan_store = store
+        return store
+
 
 # ---------------------------------------------------------------------------
 # Request / Response models
@@ -171,40 +197,32 @@ async def list_scans(
     user: User = Depends(get_current_user),
 ):
     """List scans, optionally filtered by engagement."""
-    from pathlib import Path
-    from opentools.scanner.store import SqliteScanStore
-
-    db_path = Path.home() / ".opentools" / "scans.db"
-    if not db_path.exists():
+    store = await _get_scan_store()
+    if store is None:
         return ScanListResponse(items=[], total=0)
 
-    store = SqliteScanStore(db_path)
-    await store.initialize()
-    try:
-        scans = await store.list_scans(engagement_id=engagement_id)
-        scans.sort(key=lambda s: s.created_at, reverse=True)
-        scans = scans[:limit]
+    scans = await store.list_scans(engagement_id=engagement_id)
+    scans.sort(key=lambda s: s.created_at, reverse=True)
+    scans = scans[:limit]
 
-        items = [
-            ScanResponse(
-                id=s.id,
-                engagement_id=s.engagement_id,
-                target=s.target,
-                target_type=s.target_type.value,
-                profile=s.profile,
-                mode=s.mode.value,
-                status=s.status.value,
-                tools_planned=s.tools_planned,
-                finding_count=s.finding_count,
-                created_at=s.created_at.isoformat(),
-                started_at=s.started_at.isoformat() if s.started_at else None,
-                completed_at=s.completed_at.isoformat() if s.completed_at else None,
-            )
-            for s in scans
-        ]
-        return ScanListResponse(items=items, total=len(items))
-    finally:
-        await store.close()
+    items = [
+        ScanResponse(
+            id=s.id,
+            engagement_id=s.engagement_id,
+            target=s.target,
+            target_type=s.target_type.value,
+            profile=s.profile,
+            mode=s.mode.value,
+            status=s.status.value,
+            tools_planned=s.tools_planned,
+            finding_count=s.finding_count,
+            created_at=s.created_at.isoformat(),
+            started_at=s.started_at.isoformat() if s.started_at else None,
+            completed_at=s.completed_at.isoformat() if s.completed_at else None,
+        )
+        for s in scans
+    ]
+    return ScanListResponse(items=items, total=len(items))
 
 
 @router.get("/{scan_id}")
@@ -213,36 +231,28 @@ async def get_scan(
     user: User = Depends(get_current_user),
 ):
     """Get scan detail."""
-    from pathlib import Path
-    from opentools.scanner.store import SqliteScanStore
-
-    db_path = Path.home() / ".opentools" / "scans.db"
-    if not db_path.exists():
+    store = await _get_scan_store()
+    if store is None:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    store = SqliteScanStore(db_path)
-    await store.initialize()
-    try:
-        scan = await store.get_scan(scan_id)
-        if scan is None:
-            raise HTTPException(status_code=404, detail="Scan not found")
+    scan = await store.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
 
-        return ScanResponse(
-            id=scan.id,
-            engagement_id=scan.engagement_id,
-            target=scan.target,
-            target_type=scan.target_type.value,
-            profile=scan.profile,
-            mode=scan.mode.value,
-            status=scan.status.value,
-            tools_planned=scan.tools_planned,
-            finding_count=scan.finding_count,
-            created_at=scan.created_at.isoformat(),
-            started_at=scan.started_at.isoformat() if scan.started_at else None,
-            completed_at=scan.completed_at.isoformat() if scan.completed_at else None,
-        )
-    finally:
-        await store.close()
+    return ScanResponse(
+        id=scan.id,
+        engagement_id=scan.engagement_id,
+        target=scan.target,
+        target_type=scan.target_type.value,
+        profile=scan.profile,
+        mode=scan.mode.value,
+        status=scan.status.value,
+        tools_planned=scan.tools_planned,
+        finding_count=scan.finding_count,
+        created_at=scan.created_at.isoformat(),
+        started_at=scan.started_at.isoformat() if scan.started_at else None,
+        completed_at=scan.completed_at.isoformat() if scan.completed_at else None,
+    )
 
 
 @router.get("/{scan_id}/tasks")
@@ -251,40 +261,32 @@ async def get_scan_tasks(
     user: User = Depends(get_current_user),
 ):
     """Get task DAG with status for a scan."""
-    from pathlib import Path
-    from opentools.scanner.store import SqliteScanStore
-
-    db_path = Path.home() / ".opentools" / "scans.db"
-    if not db_path.exists():
+    store = await _get_scan_store()
+    if store is None:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    store = SqliteScanStore(db_path)
-    await store.initialize()
-    try:
-        scan = await store.get_scan(scan_id)
-        if scan is None:
-            raise HTTPException(status_code=404, detail="Scan not found")
+    scan = await store.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
 
-        tasks = await store.get_scan_tasks(scan_id)
-        return {
-            "scan_id": scan_id,
-            "tasks": [
-                TaskResponse(
-                    id=t.id,
-                    name=t.name,
-                    tool=t.tool,
-                    task_type=t.task_type.value,
-                    status=t.status.value,
-                    priority=t.priority,
-                    depends_on=t.depends_on,
-                    duration_ms=t.duration_ms,
-                ).model_dump()
-                for t in tasks
-            ],
-            "total": len(tasks),
-        }
-    finally:
-        await store.close()
+    tasks = await store.get_scan_tasks(scan_id)
+    return {
+        "scan_id": scan_id,
+        "tasks": [
+            TaskResponse(
+                id=t.id,
+                name=t.name,
+                tool=t.tool,
+                task_type=t.task_type.value,
+                status=t.status.value,
+                priority=t.priority,
+                depends_on=t.depends_on,
+                duration_ms=t.duration_ms,
+            ).model_dump()
+            for t in tasks
+        ],
+        "total": len(tasks),
+    }
 
 
 @router.get("/{scan_id}/findings")
@@ -294,38 +296,30 @@ async def get_scan_findings(
     user: User = Depends(get_current_user),
 ):
     """Get deduplicated findings for a scan."""
-    from pathlib import Path
-    from opentools.scanner.store import SqliteScanStore
-
-    db_path = Path.home() / ".opentools" / "scans.db"
-    if not db_path.exists():
+    store = await _get_scan_store()
+    if store is None:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    store = SqliteScanStore(db_path)
-    await store.initialize()
-    try:
-        findings = await store.get_scan_findings(scan_id)
-        if severity:
-            findings = [f for f in findings if f.severity_consensus == severity]
+    findings = await store.get_scan_findings(scan_id)
+    if severity:
+        findings = [f for f in findings if f.severity_consensus == severity]
 
-        return {
-            "scan_id": scan_id,
-            "findings": [
-                FindingResponse(
-                    id=f.id,
-                    canonical_title=f.canonical_title,
-                    severity_consensus=f.severity_consensus,
-                    tools=f.tools,
-                    confidence_score=f.confidence_score,
-                    location_fingerprint=f.location_fingerprint,
-                    suppressed=f.suppressed,
-                ).model_dump()
-                for f in findings
-            ],
-            "total": len(findings),
-        }
-    finally:
-        await store.close()
+    return {
+        "scan_id": scan_id,
+        "findings": [
+            FindingResponse(
+                id=f.id,
+                canonical_title=f.canonical_title,
+                severity_consensus=f.severity_consensus,
+                tools=f.tools,
+                confidence_score=f.confidence_score,
+                location_fingerprint=f.location_fingerprint,
+                suppressed=f.suppressed,
+            ).model_dump()
+            for f in findings
+        ],
+        "total": len(findings),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -402,42 +396,37 @@ async def stream_scan_events(
     Supports reconnection via Last-Event-ID header — events are replayed
     from the persisted event store.
     """
-    from pathlib import Path
-    from opentools.scanner.store import SqliteScanStore
-
-    db_path = Path.home() / ".opentools" / "scans.db"
-
     async def event_generator():
-        store = SqliteScanStore(db_path)
-        await store.initialize()
-        try:
-            # Determine starting sequence
-            last_seq = 0
-            if last_event_id:
-                try:
-                    last_seq = int(last_event_id)
-                except ValueError:
-                    pass
+        store = await _get_scan_store()
+        if store is None:
+            yield f"event: error\ndata: {json.dumps({'detail': 'Scan store not available'})}\n\n"
+            return
 
-            while True:
-                if await request.is_disconnected():
-                    break
+        # Determine starting sequence
+        last_seq = 0
+        if last_event_id:
+            try:
+                last_seq = int(last_event_id)
+            except ValueError:
+                pass
 
-                events = await store.get_events_after(scan_id, last_seq)
-                for event in events:
-                    data = event.model_dump_json()
-                    yield f"id: {event.sequence}\nevent: {event.type.value}\ndata: {data}\n\n"
-                    last_seq = event.sequence
+        while True:
+            if await request.is_disconnected():
+                break
 
-                # Check if scan is finished
-                scan = await store.get_scan(scan_id)
-                if scan and scan.status.value in ("completed", "failed", "cancelled"):
-                    yield f"event: scan_finished\ndata: {json.dumps({'status': scan.status.value})}\n\n"
-                    break
+            events = await store.get_events_after(scan_id, last_seq)
+            for event in events:
+                data = event.model_dump_json()
+                yield f"id: {event.sequence}\nevent: {event.type.value}\ndata: {data}\n\n"
+                last_seq = event.sequence
 
-                await asyncio.sleep(1.0)
-        finally:
-            await store.close()
+            # Check if scan is finished
+            scan = await store.get_scan(scan_id)
+            if scan and scan.status.value in ("completed", "failed", "cancelled"):
+                yield f"event: scan_finished\ndata: {json.dumps({'status': scan.status.value})}\n\n"
+                break
+
+            await asyncio.sleep(1.0)
 
     return StreamingResponse(
         event_generator(),
