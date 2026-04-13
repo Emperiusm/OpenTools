@@ -20,6 +20,7 @@ from opentools.scanner.models import (
     ScanStatus,
     ScanTask,
     TargetType,
+    TaskType,
 )
 from opentools.scanner.planner import ScanPlanner
 from opentools.scanner.target import TargetDetector, TargetValidator
@@ -129,45 +130,87 @@ class ScanAPI:
         scan: Scan,
         tasks: list[ScanTask],
         on_progress: Optional[Callable] = None,
+        store=None,
     ) -> Scan:
         """Execute a planned scan.
 
-        Sets up the ScanEngine, loads tasks, runs the DAG, and returns
-        the completed Scan. This method is a placeholder for full
-        integration with ScanEngine (to be wired in Plan 4/5).
+        Sets up the ScanEngine with pipeline integration, loads tasks,
+        runs the DAG, and returns the completed Scan.
 
         Args:
             scan: The Scan object from plan().
             tasks: The task list from plan().
             on_progress: Optional progress callback.
+            store: Optional ScanStoreProtocol. If None, a temporary
+                   in-memory approach is used (no finding persistence).
 
         Returns:
             Updated Scan object with final status.
         """
+        from opentools.scanner.engine import ScanEngine
+        from opentools.shared.progress import EventBus
+        from opentools.shared.resource_pool import AdaptiveResourcePool
+
         cancel = CancellationToken()
+        event_bus = EventBus()
+
+        # Set up resource pool
+        max_concurrent = 8
+        if scan.config and scan.config.max_concurrent_tasks:
+            max_concurrent = scan.config.max_concurrent_tasks
+        pool = AdaptiveResourcePool(global_limit=max_concurrent)
+
+        # Build executors — register available executors.
+        # DockerExecExecutor requires a container_id and is not registered here;
+        # it should be provided by callers that have a concrete container context.
+        # McpExecutor similarly requires server configuration.
+        executors: dict[TaskType, Any] = {}
+        try:
+            from opentools.scanner.executor.shell import ShellExecutor
+            executors[TaskType.SHELL] = ShellExecutor()
+        except (ImportError, Exception):
+            pass
+
+        # Build pipeline if store is available
+        pipeline = None
+        if store is not None:
+            try:
+                from opentools.scanner.pipeline import ScanPipeline
+                pipeline = ScanPipeline(
+                    store=store,
+                    engagement_id=scan.engagement_id,
+                    scan_id=scan.id,
+                )
+            except ImportError:
+                pass
+
+        # Create engine
+        engine = ScanEngine(
+            scan=scan,
+            resource_pool=pool,
+            executors=executors,
+            event_bus=event_bus,
+            cancellation=cancel,
+            pipeline=pipeline,
+        )
+
         self._active_scans[scan.id] = {
             "scan": scan,
             "cancel": cancel,
+            "engine": engine,
         }
 
         try:
-            # Full engine integration will be wired in later plans.
-            # For now, just update the scan status to indicate execution
-            # would happen here.
-            scan = scan.model_copy(
-                update={
-                    "status": ScanStatus.RUNNING,
-                    "started_at": datetime.now(timezone.utc),
-                }
-            )
+            engine.load_tasks(tasks)
+            await engine.run()
+            scan = engine.scan
             self._active_scans[scan.id]["scan"] = scan
             return scan
         except Exception:
             scan = scan.model_copy(update={"status": ScanStatus.FAILED})
             return scan
         finally:
-            # Cleanup will be more involved once engine is integrated
-            pass
+            self._active_scans.pop(scan.id, None)
 
     async def pause(self, scan_id: str) -> None:
         """Pause a running scan.
