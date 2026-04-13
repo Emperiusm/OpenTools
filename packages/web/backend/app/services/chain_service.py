@@ -250,7 +250,8 @@ class ChainService:
         session: AsyncSession,
         *,
         user_id: uuid.UUID,
-        engagement_id: str,
+        engagement_id: str | None = None,
+        engagement_ids: list[str] | None = None,
         severities: set[str] | None = None,
         statuses: set[str] | None = None,
         max_nodes: int = 500,
@@ -269,21 +270,21 @@ class ChainService:
         store = chain_store_from_session(session)
         await store.initialize()
 
-        # Count total findings in engagement (for meta)
-        total_stmt = select(func.count()).select_from(Finding).where(
-            Finding.engagement_id == engagement_id,
+        # Fetch findings — scoped to engagement or global
+        finding_stmt = select(Finding).where(
             Finding.user_id == user_id,
             Finding.deleted_at.is_(None),
         )
+        if engagement_id:
+            finding_stmt = finding_stmt.where(Finding.engagement_id == engagement_id)
+        elif engagement_ids:
+            finding_stmt = finding_stmt.where(Finding.engagement_id.in_(engagement_ids))
+
+        # Total count (before severity filter and cap)
+        total_stmt = select(func.count()).select_from(finding_stmt.subquery())
         total_result = await session.execute(total_stmt)
         total_findings = total_result.scalar() or 0
 
-        # Fetch findings for this engagement, applying severity filter
-        finding_stmt = select(Finding).where(
-            Finding.engagement_id == engagement_id,
-            Finding.user_id == user_id,
-            Finding.deleted_at.is_(None),
-        )
         if severities:
             finding_stmt = finding_stmt.where(Finding.severity.in_(severities))
         finding_stmt = finding_stmt.limit(max_nodes)
@@ -327,6 +328,26 @@ class ChainService:
         rel_result = await session.execute(rel_stmt)
         relations_orm = list(rel_result.scalars().all())
 
+        # Compute betweenness centrality for pivotality scores
+        pivotality_scores: dict[str, float] = {}
+        if finding_ids and len(finding_ids) > 1:
+            import rustworkx as rx
+            g = rx.PyDiGraph()
+            id_to_idx: dict[str, int] = {}
+            for fid in finding_ids:
+                idx = g.add_node(fid)
+                id_to_idx[fid] = idx
+            for r in relations_orm:
+                src = r.source_finding_id
+                tgt = r.target_finding_id
+                if src in id_to_idx and tgt in id_to_idx:
+                    g.add_edge(id_to_idx[src], id_to_idx[tgt], r.weight)
+            centrality = rx.betweenness_centrality(g)
+            max_c = max(centrality.values()) if centrality else 1.0
+            for fid, idx in id_to_idx.items():
+                raw = centrality.get(idx, 0.0)
+                pivotality_scores[fid] = raw / max_c if max_c > 0 else 0.0
+
         # Build nodes
         nodes = [
             {
@@ -335,6 +356,9 @@ class ChainService:
                 "severity": f.severity,
                 "tool": f.tool,
                 "phase": f.phase,
+                "created_at": f.created_at.isoformat() if f.created_at else None,
+                "engagement_id": f.engagement_id,
+                "pivotality": round(pivotality_scores.get(f.id, 0.0), 3),
             }
             for f in findings
         ]
@@ -393,6 +417,18 @@ class ChainService:
                 },
             }
 
+        # Collect distinct engagements represented in the result
+        from app.models import Engagement as EngModel
+        eng_ids_in_result = {f.engagement_id for f in findings}
+        engagements_meta = []
+        if eng_ids_in_result:
+            eng_stmt = select(EngModel).where(EngModel.id.in_(eng_ids_in_result))
+            eng_result = await session.execute(eng_stmt)
+            engagements_meta = [
+                {"id": e.id, "name": e.name}
+                for e in eng_result.scalars()
+            ]
+
         return {
             "graph": graph,
             "meta": {
@@ -400,6 +436,7 @@ class ChainService:
                 "rendered_findings": len(findings),
                 "filtered": bool(severities) or len(findings) < total_findings,
                 "generation": generation,
+                "engagements": engagements_meta,
             },
         }
 
