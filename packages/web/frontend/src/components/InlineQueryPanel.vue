@@ -5,14 +5,7 @@
       {{ expanded ? 'Hide Query' : 'Query' }}
     </button>
     <div v-if="expanded" class="panel-content">
-      <textarea
-        v-model="queryText"
-        class="editor-textarea"
-        placeholder="MATCH (a:Finding)-[r:LINKED]->(b:Finding) RETURN a, b"
-        :disabled="loading"
-        @keydown.ctrl.enter.prevent="runQuery"
-        @keydown.meta.enter.prevent="runQuery"
-      ></textarea>
+      <CypherEditor v-model="queryText" :disabled="loading" @run="runQuery" />
       <div class="panel-actions">
         <button class="run-btn" @click="runQuery" :disabled="loading">
           {{ loading ? 'Running...' : 'Run (Ctrl+Enter)' }}
@@ -46,6 +39,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import CypherEditor from '@/components/CypherEditor.vue'
 
 const props = defineProps<{
   engagementId?: string | null
@@ -128,17 +122,6 @@ async function runQuery() {
 }
 .toggle-btn:hover { background: #eee; }
 .panel-content { padding: 8px; }
-.editor-textarea {
-  width: 100%;
-  min-height: 60px;
-  max-height: 120px;
-  padding: 6px;
-  font-family: 'Fira Code', monospace;
-  font-size: 13px;
-  border: 1px solid #ddd;
-  border-radius: 3px;
-  resize: vertical;
-}
 .panel-actions {
   display: flex;
   justify-content: flex-end;
