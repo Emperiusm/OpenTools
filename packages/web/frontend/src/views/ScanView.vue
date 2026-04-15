@@ -211,7 +211,7 @@ function toggleScan(scanId: string) {
     <Card class="mb-5">
       <template #title>New Scan</template>
       <template #content>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <div class="form-grid mb-4">
           <div class="flex flex-col gap-1">
             <label class="text-sm font-medium">Target Type</label>
             <Select v-model="targetType" :options="targetTypeOptions" optionLabel="label" optionValue="value" class="w-full" />
@@ -323,7 +323,7 @@ function toggleScan(scanId: string) {
           <div v-if="!scanTasks[activeScanId]" class="flex justify-center py-3">
             <ProgressSpinner style="width: 24px; height: 24px" />
           </div>
-          <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <div v-else class="task-grid">
             <div v-for="task in scanTasks[activeScanId]" :key="task.id"
               class="task-card flex items-center gap-2 p-2 rounded">
               <i :class="taskStatusIcon(task.status)" :style="taskStatusColor(task.status)"></i>
@@ -355,5 +355,18 @@ function toggleScan(scanId: string) {
 .task-card {
   background: var(--p-surface-800, #16213e);
   border: 1px solid var(--p-surface-700, #333);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+.task-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.5rem;
+}
+@media (max-width: 768px) {
+  .form-grid { grid-template-columns: 1fr; }
 }
 </style>
