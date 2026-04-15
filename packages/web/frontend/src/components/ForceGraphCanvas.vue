@@ -39,11 +39,13 @@ const props = withDefaults(defineProps<{
   data: GraphData
   selectedNodeId: string | null
   selectedLinkId: string | null
+  highlightedNodeIds?: string[]
   timeRange?: { start: Date; end: Date } | null
   layoutMode?: 'force' | 'killchain'
   colorMode?: 'severity' | 'engagement'
   engagementColors?: Record<string, string>
 }>(), {
+  highlightedNodeIds: () => [],
   timeRange: null,
   layoutMode: 'force',
   colorMode: 'severity',
@@ -150,6 +152,19 @@ function initGraph() {
         ? (props.engagementColors[n.engagement_id] || '#95a5a6')
         : (SEVERITY_COLORS[n.severity] || '#95a5a6')
       const isSelected = n.id === props.selectedNodeId
+      const isHighlighted = props.highlightedNodeIds.includes(n.id)
+
+      // Highlight glow (from query results)
+      if (isHighlighted) {
+        ctx.save()
+        ctx.shadowColor = '#FFD700'
+        ctx.shadowBlur = 8 / globalScale
+        ctx.beginPath()
+        ctx.arc(node.x, node.y, radius + 2 / globalScale, 0, 2 * Math.PI)
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.3)'
+        ctx.fill()
+        ctx.restore()
+      }
 
       // Pivotality glow
       if (n.pivotality && n.pivotality > 0.1) {
@@ -431,6 +446,12 @@ watch(() => props.data, (newData) => {
     updateData(newData)
   }
 }, { deep: true })
+
+watch(() => props.highlightedNodeIds, () => {
+  if (graph) {
+    graph.refresh()
+  }
+})
 
 watch(() => props.layoutMode, (mode) => {
   if (mode === 'killchain') {

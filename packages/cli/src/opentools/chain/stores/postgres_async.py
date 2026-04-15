@@ -625,6 +625,19 @@ class PostgresChainStore:
 
     @require_initialized
     @require_user_scope
+    async def fetch_all_mentions_in_scope(
+        self, *, user_id: UUID, engagement_ids: list[str] | None = None
+    ) -> list[EntityMention]:
+        M = self._models
+        assert self._session is not None
+        stmt = select(M.ChainEntityMention).where(
+            M.ChainEntityMention.user_id == user_id,
+        )
+        result = await self._session.execute(stmt)
+        return [_orm_to_mention(r) for r in result.scalars()]
+
+    @require_initialized
+    @require_user_scope
     async def delete_mentions_for_finding(
         self, finding_id: str, *, user_id: UUID
     ) -> int:

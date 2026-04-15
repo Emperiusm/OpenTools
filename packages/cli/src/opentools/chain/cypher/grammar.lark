@@ -1,0 +1,119 @@
+// Cypher-style query DSL grammar (LALR mode)
+
+start: session_assignment | query
+
+session_assignment: IDENT "=" query
+
+query: match_clause where_clause? return_clause
+
+match_clause: KW_MATCH pattern_list
+
+pattern_list: pattern ("," pattern)*
+
+pattern: node_pattern (edge_pattern node_pattern)*
+
+// Node patterns
+node_pattern: "(" variable_def? label_def? ")" from_clause?
+
+from_clause: KW_FROM IDENT
+
+variable_def: IDENT
+
+label_def: ":" NODE_LABEL
+
+// Edge patterns
+edge_pattern: outgoing_edge | incoming_edge
+
+outgoing_edge: "-" edge_detail "->"
+incoming_edge: "<-" edge_detail "-"
+
+edge_detail: "[" edge_var? edge_label? var_length? "]"
+
+edge_var: IDENT
+
+edge_label: ":" EDGE_LABEL
+
+var_length: "*" INT ".." INT
+
+// WHERE clause
+where_clause: KW_WHERE bool_expr
+
+?bool_expr: or_expr
+
+?or_expr: and_expr (KW_AND and_expr)*
+
+?and_expr: not_expr (KW_AND not_expr)* -> and_expr
+
+?not_expr: KW_NOT not_expr -> not_expr
+    | comparison
+
+?comparison: prop_access KW_CONTAINS expr   -> contains_expr
+    | prop_access KW_STARTS_WITH expr        -> starts_with_expr
+    | prop_access KW_ENDS_WITH expr          -> ends_with_expr
+    | prop_access KW_IN expr                 -> in_expr
+    | prop_access KW_IS_NOT_NULL             -> is_not_null_expr
+    | prop_access KW_IS_NULL                 -> is_null_expr
+    | expr comp_op expr                      -> comparison_expr
+    | function_call                          -> where_func
+    | "(" bool_expr ")"
+
+!comp_op: "=" | "<>" | "<=" | ">=" | "<" | ">"
+
+// RETURN clause
+return_clause: KW_RETURN return_list
+
+return_list: return_item ("," return_item)*
+
+return_item: expr alias?
+
+alias: KW_AS IDENT
+
+// Expressions
+?expr: function_call
+    | prop_access
+    | atom
+
+prop_access: IDENT "." IDENT
+
+function_call: IDENT "(" arg_list? ")"
+
+arg_list: expr ("," expr)*
+
+?atom: STRING -> string_val
+    | FLOAT -> float_val
+    | INT -> int_val
+    | IDENT -> var_ref
+
+// -- Terminals --
+
+// Case-insensitive keywords (high priority to beat IDENT)
+KW_MATCH.10: /MATCH/i
+KW_WHERE.10: /WHERE/i
+KW_RETURN.10: /RETURN/i
+KW_AND.10: /AND/i
+KW_OR.10: /OR/i
+KW_NOT.10: /NOT/i
+KW_AS.10: /AS/i
+KW_FROM.10: /FROM/i
+KW_CONTAINS.10: /CONTAINS/i
+KW_STARTS_WITH.10: /STARTS\s+WITH/i
+KW_ENDS_WITH.10: /ENDS\s+WITH/i
+KW_IS_NOT_NULL.10: /IS\s+NOT\s+NULL/i
+KW_IS_NULL.10: /IS\s+NULL/i
+KW_IN.10: /IN/i
+
+// Node and edge labels (high priority)
+NODE_LABEL.5: "Finding" | "Host" | "IP" | "CVE" | "Domain" | "Port" | "MitreAttack" | "Entity"
+EDGE_LABEL.5: "LINKED" | "MENTIONED_IN"
+
+// Literals
+STRING: /\"[^\"]*\"/
+FLOAT.2: /\d+\.\d+/
+INT: /\d+/
+
+// Identifiers (lowest priority)
+IDENT: /[a-zA-Z_][a-zA-Z0-9_]*/
+
+// Whitespace
+%import common.WS
+%ignore WS

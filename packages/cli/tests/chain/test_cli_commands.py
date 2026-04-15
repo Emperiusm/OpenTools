@@ -95,12 +95,12 @@ def test_cli_path_runs(cli_runner, populated_db):
 
 
 def test_cli_query_mitre_coverage_runs(cli_runner, populated_db):
-    result = cli_runner.invoke(app, ["query", "mitre-coverage", "--engagement", "eng_cli"])
+    result = cli_runner.invoke(app, ["query", "preset", "mitre-coverage", "--engagement", "eng_cli"])
     assert result.exit_code == 0
 
 
 def test_cli_query_unknown_preset_fails(cli_runner, populated_db):
-    result = cli_runner.invoke(app, ["query", "not-a-real-preset", "--engagement", "eng_cli"])
+    result = cli_runner.invoke(app, ["query", "preset", "not-a-real-preset", "--engagement", "eng_cli"])
     assert result.exit_code != 0
 
 

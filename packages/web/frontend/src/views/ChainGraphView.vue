@@ -11,6 +11,7 @@ import ChainDetailPanel from '@/components/ChainDetailPanel.vue'
 import ChainFilterToolbar from '@/components/ChainFilterToolbar.vue'
 import ChainLegend from '@/components/ChainLegend.vue'
 import ChainEmptyState from '@/components/ChainEmptyState.vue'
+import InlineQueryPanel from '@/components/InlineQueryPanel.vue'
 import ChainTimelineScrubber from '@/components/ChainTimelineScrubber.vue'
 
 const route = useRoute()
@@ -209,6 +210,12 @@ const { data: engagement } = useQuery({
   queryFn: () =>
     fetch(`/api/v1/engagements/${engId}`, { credentials: 'include' }).then(r => r.json()),
 })
+
+const highlightedNodeIds = ref<string[]>([])
+
+function onQueryHighlight(nodeIds: string[]) {
+  highlightedNodeIds.value = nodeIds
+}
 </script>
 
 <template>
@@ -238,11 +245,12 @@ const { data: engagement } = useQuery({
     </template>
 
     <template v-else>
-      <div class="flex flex-1 overflow-hidden">
+      <div class="flex flex-1 overflow-hidden relative">
         <ForceGraphCanvas
           :data="graphData"
           :selected-node-id="selectedNode?.id ?? null"
           :selected-link-id="selectedLink?.id ?? null"
+          :highlighted-node-ids="highlightedNodeIds"
           :time-range="timeRange"
           :layout-mode="layoutMode"
           class="flex-1"
@@ -260,6 +268,7 @@ const { data: engagement } = useQuery({
           @expand="onExpand"
           @export-path="onExportPath"
         />
+        <InlineQueryPanel :engagement-id="engId" @highlight="onQueryHighlight" />
       </div>
     </template>
 

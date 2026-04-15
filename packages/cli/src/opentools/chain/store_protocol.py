@@ -144,6 +144,20 @@ class ChainStoreProtocol(Protocol):
         """
         ...
 
+    async def fetch_all_mentions_in_scope(
+        self,
+        *,
+        user_id: UUID | None,
+        engagement_ids: list[str] | None = None,
+    ) -> list[EntityMention]:
+        """Return all entity mentions for the user scope.
+
+        Used by VirtualGraphBuilder to populate MENTIONED_IN edges.
+        When ``engagement_ids`` is provided, restricts to mentions whose
+        finding belongs to one of those engagements.
+        """
+        ...
+
     # --- Relation CRUD ---
 
     async def upsert_relations_bulk(

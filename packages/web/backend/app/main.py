@@ -21,6 +21,7 @@ from app.routes import (
     correlation,
     chain,
     scans,
+    chain_query,
 )
 
 
@@ -71,3 +72,4 @@ app.include_router(system.router)
 app.include_router(correlation.router)
 app.include_router(chain.router)
 app.include_router(scans.router)
+app.include_router(chain_query.router)

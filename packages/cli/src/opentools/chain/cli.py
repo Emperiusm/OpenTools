@@ -287,9 +287,15 @@ async def export(
         await chain_store.close()
 
 
-@app.command()
+# ─── query sub-app ──────────────────────────────────────────────────
+
+query_app = typer.Typer(help="Cypher query DSL and preset commands")
+app.add_typer(query_app, name="query")
+
+
+@query_app.command("preset")
 @_async_command
-async def query(
+async def query_preset(
     preset: str = typer.Argument(..., help="Preset name (lateral-movement, priv-esc-chains, external-to-internal, crown-jewel, mitre-coverage)"),
     engagement: str = typer.Option(..., "--engagement", help="Engagement id"),
     entity_ref: str | None = typer.Option(None, "--entity", help="Required for crown-jewel preset"),
@@ -340,6 +346,187 @@ async def query(
             rprint(f"[bold]Result {i}[/bold] cost={p.total_cost:.3f} length={p.length}")
             for n in p.nodes:
                 rprint(f"  {n.finding_id}: {n.title}")
+    finally:
+        await chain_store.close()
+
+
+@query_app.command("run")
+@_async_command
+async def query_run(
+    cypher: str = typer.Argument(..., help="Cypher query string"),
+    timeout: float = typer.Option(30.0, "--timeout", help="Query timeout in seconds"),
+    max_rows: int = typer.Option(1000, "--max-rows", help="Maximum result rows"),
+    engagement: str | None = typer.Option(None, "--engagement", help="Scope to engagement"),
+    include_candidates: bool = typer.Option(False, "--include-candidates", help="Include candidate edges"),
+    format_: str = typer.Option("table", "--format", help="Output format: table, json, csv"),
+    no_subgraph: bool = typer.Option(False, "--no-subgraph", help="Skip subgraph projection"),
+) -> None:
+    """Execute a Cypher query."""
+    import json
+    from opentools.chain.cypher import CypherSession
+    from opentools.chain.cypher.limits import QueryLimits
+
+    _engagement_store, chain_store = await _get_stores()
+    try:
+        cfg = get_chain_config()
+        cache = GraphCache(store=chain_store, maxsize=cfg.query.graph_cache_size)
+        cypher_session = CypherSession(store=chain_store, graph_cache=cache, config=cfg)
+
+        if engagement:
+            cypher_session.set_engagement_scope(frozenset([engagement]))
+        cypher_session.set_include_candidates(include_candidates)
+        cypher_session.limits = QueryLimits(timeout_seconds=timeout, max_rows=max_rows)
+
+        result = await cypher_session.execute(cypher)
+
+        if format_ == "json":
+            rprint(json.dumps(
+                {"columns": result.columns, "rows": result.rows,
+                 "stats": {"duration_ms": result.stats.duration_ms, "rows_returned": result.stats.rows_returned},
+                 "truncated": result.truncated},
+                indent=2, default=str,
+            ))
+        elif format_ == "csv":
+            if result.columns:
+                rprint(",".join(result.columns))
+                for row in result.rows:
+                    rprint(",".join(str(row.get(c, "")) for c in result.columns))
+        else:
+            if not result.rows:
+                rprint("[yellow]no results[/yellow]")
+                return
+            table = Table()
+            for col in result.columns:
+                table.add_column(col)
+            for row in result.rows:
+                table.add_row(*[str(row.get(c, "")) for c in result.columns])
+            console.print(table)
+            rprint(f"[dim]{result.stats.rows_returned} rows, {result.stats.duration_ms:.1f}ms[/dim]")
+            if result.truncated:
+                rprint(f"[yellow]truncated: {result.truncation_reason}[/yellow]")
+    finally:
+        await chain_store.close()
+
+
+@query_app.command("explain")
+@_async_command
+async def query_explain(
+    cypher: str = typer.Argument(..., help="Cypher query string"),
+) -> None:
+    """Show the query plan without executing."""
+    from opentools.chain.cypher.limits import QueryLimits
+    from opentools.chain.cypher.parser import parse_cypher
+    from opentools.chain.cypher.planner import plan_query
+
+    limits = QueryLimits()
+    ast = parse_cypher(cypher)
+    plan = plan_query(ast, limits)
+
+    rprint("[bold]Query Plan[/bold]")
+    for i, step in enumerate(plan.steps, 1):
+        rprint(f"  {i}. {step.kind}: {step.target_var} (label={step.label}, direction={step.direction})")
+        if step.predicates:
+            rprint(f"     predicates: {len(step.predicates)} pushed down")
+        if step.min_hops is not None:
+            rprint(f"     hops: {step.min_hops}..{step.max_hops}")
+
+
+@query_app.command("repl")
+@_async_command
+async def query_repl(
+    engagement: str | None = typer.Option(None, "--engagement", help="Scope to engagement"),
+    include_candidates: bool = typer.Option(False, "--include-candidates"),
+) -> None:
+    """Start an interactive Cypher query REPL."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import InMemoryHistory
+    from opentools.chain.cypher import CypherSession
+    from opentools.chain.cypher.errors import QueryParseError, QueryResourceError, QueryValidationError
+
+    _engagement_store, chain_store = await _get_stores()
+    try:
+        cfg = get_chain_config()
+        cache = GraphCache(store=chain_store, maxsize=cfg.query.graph_cache_size)
+        cypher_session = CypherSession(store=chain_store, graph_cache=cache, config=cfg)
+
+        if engagement:
+            cypher_session.set_engagement_scope(frozenset([engagement]))
+        cypher_session.set_include_candidates(include_candidates)
+
+        prompt_session = PromptSession(history=InMemoryHistory())
+        rprint("[bold]OpenTools Cypher REPL[/bold] (type :help for help, :quit to exit)")
+
+        while True:
+            try:
+                text = prompt_session.prompt("cypher> ")
+            except (EOFError, KeyboardInterrupt):
+                break
+
+            text = text.strip()
+            if not text:
+                continue
+
+            while text.endswith("-") or text.endswith("|") or text.count("(") > text.count(")"):
+                try:
+                    continuation = prompt_session.prompt("   ...> ")
+                    text += " " + continuation.strip()
+                except (EOFError, KeyboardInterrupt):
+                    break
+
+            if text.startswith(":"):
+                cmd = text[1:].strip().lower()
+                if cmd in ("quit", "exit"):
+                    break
+                elif cmd == "help":
+                    rprint("Cypher query DSL. MATCH (a:Finding)-[r:LINKED]->(b:Finding) WHERE ... RETURN ...")
+                    rprint("Labels: Finding, Host, IP, CVE, Domain, Port, MitreAttack, Entity")
+                    rprint("Edges: LINKED, MENTIONED_IN")
+                elif cmd == "functions":
+                    from opentools.chain.cypher.builtins import list_builtins
+                    for name, info in list_builtins().items():
+                        rprint(f"  {name}: {info.get('help', '')}")
+                    for name, info in cypher_session.plugin_registry.list_all().items():
+                        rprint(f"  {name}: {info.get('help', '')} [{info.get('kind', '')}]")
+                elif cmd == "clear":
+                    cypher_session.session.clear()
+                    rprint("[dim]session cleared[/dim]")
+                elif cmd.startswith("limits"):
+                    rprint(f"timeout: {cypher_session.limits.timeout_seconds}s")
+                    rprint(f"max_rows: {cypher_session.limits.max_rows}")
+                    rprint(f"intermediate_cap: {cypher_session.limits.intermediate_binding_cap}")
+                else:
+                    rprint(f"[red]unknown command: {text}[/red]")
+                continue
+
+            if text in cypher_session.session.list_variables():
+                stored = cypher_session.session.get(text)
+                if stored:
+                    for row in stored.rows[:20]:
+                        rprint(row)
+                    if len(stored.rows) > 20:
+                        rprint(f"[dim]... {len(stored.rows) - 20} more rows[/dim]")
+                continue
+
+            try:
+                result = await cypher_session.execute(text)
+                if not result.rows:
+                    rprint("[yellow]no results[/yellow]")
+                else:
+                    table = Table()
+                    for col in result.columns:
+                        table.add_column(col)
+                    for row in result.rows:
+                        table.add_row(*[str(row.get(c, "")) for c in result.columns])
+                    console.print(table)
+                    rprint(f"[dim]{result.stats.rows_returned} rows, {result.stats.duration_ms:.1f}ms[/dim]")
+            except (QueryParseError, QueryValidationError) as e:
+                rprint(f"[red]Parse error: {e}[/red]")
+            except QueryResourceError as e:
+                rprint(f"[red]Resource limit: {e}[/red]")
+            except Exception as e:
+                rprint(f"[red]Error: {e}[/red]")
+
+        rprint("[dim]bye[/dim]")
     finally:
         await chain_store.close()
 
