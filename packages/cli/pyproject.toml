@@ -18,6 +18,8 @@ dependencies = [
     "orjson>=3.10.0",
     "sqlalchemy>=2.0.30",
     "aiosqlite>=0.21",
+    "opentools-plugin-core>=0.1.0",
+    "filelock>=3.16",
 ]
 
 [project.optional-dependencies]

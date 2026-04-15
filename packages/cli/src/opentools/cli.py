@@ -35,6 +35,7 @@ config_app = typer.Typer(name="config", help="Configuration")
 
 from opentools.chain.cli import app as chain_app  # noqa: E402
 from opentools.scanner.scan_cli import app as scan_app  # noqa: E402
+from opentools.plugin_cli import plugin_app  # noqa: E402
 
 app.add_typer(engagement_app)
 app.add_typer(findings_app)
@@ -47,6 +48,7 @@ app.add_typer(audit_app)
 app.add_typer(config_app)
 app.add_typer(chain_app)
 app.add_typer(scan_app)
+app.add_typer(plugin_app)
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ const router = createRouter({
     { path: '/containers', name: 'containers', component: () => import('@/views/ContainerStatusView.vue') },
     { path: '/iocs/correlate', name: 'ioc-correlate', component: () => import('@/views/IOCCorrelationView.vue') },
     { path: '/iocs/trending', name: 'ioc-trending', component: () => import('@/views/IOCTrendingView.vue') },
+    { path: '/scans', name: 'scans', component: () => import('@/views/ScanView.vue') },
   ],
 })
 

@@ -30,7 +30,9 @@ class RecipeService:
                 for r in recipes
             ]
         except Exception as exc:
-            return [{"error": str(exc)}]
+            import logging
+            logging.getLogger(__name__).warning("Failed to load recipes: %s", exc)
+            return []
 
     async def run(
         self,

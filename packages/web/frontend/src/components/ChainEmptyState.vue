@@ -18,7 +18,7 @@ async function startRebuild() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ engagement_id: props.engagementId }),
+      body: JSON.stringify({ engagement_id: props.engagementId || null }),
     })
     if (!resp.ok) throw new Error('Failed to start rebuild')
     const { run_id } = await resp.json()

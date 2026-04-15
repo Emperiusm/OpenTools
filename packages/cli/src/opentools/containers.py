@@ -143,3 +143,49 @@ class ContainerManager:
         if tool:
             return tool.profiles
         return []
+
+
+def get_plugin_container_statuses() -> list[ContainerStatus]:
+    """Get status of all plugin containers across installed plugins."""
+    from opentools.plugin import _marketplace_plugin_dirs
+
+    statuses: list[ContainerStatus] = []
+    for version_dir in _marketplace_plugin_dirs():
+        compose_dir = version_dir / "compose"
+        if not compose_dir.is_dir():
+            continue
+
+        compose_file = compose_dir / "docker-compose.yaml"
+        if not compose_file.exists():
+            compose_file = compose_dir / "docker-compose.yml"
+        if not compose_file.exists():
+            continue
+
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(compose_file), "ps", "--format", "json"],
+                capture_output=True, timeout=10,
+                cwd=str(compose_dir),
+            )
+            if result.returncode != 0:
+                continue
+
+            stdout = result.stdout.decode(errors="replace").strip()
+            for line in stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    statuses.append(ContainerStatus(
+                        name=data.get("Name", data.get("Service", "")),
+                        state=data.get("State", "unknown"),
+                        health=data.get("Health"),
+                        profile=["plugin"],
+                    ))
+                except json.JSONDecodeError:
+                    continue
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+
+    return statuses
