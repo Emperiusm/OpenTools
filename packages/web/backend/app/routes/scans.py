@@ -269,7 +269,7 @@ async def create_scan(
 
             # Auto-start required tool containers
             needed_containers = set()
-            for task in t:
+            for task in tasks:
                 container = _TOOL_CONTAINERS.get(task.tool)
                 if container:
                     needed_containers.add(container)
@@ -322,7 +322,7 @@ async def create_scan(
                     logger.warning("Some containers may not be ready after 30s, proceeding anyway")
 
             # Rewrite task commands to go through docker exec
-            for task in t:
+            for task in tasks:
                 container = _TOOL_CONTAINERS.get(task.tool)
                 if container and task.command and not task.command.startswith("docker "):
                     task.command = f"docker exec {container} {task.command}"
