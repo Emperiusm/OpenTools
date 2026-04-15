@@ -238,7 +238,75 @@ async def create_scan(
     async def _run_scan():
         """Background task: execute scan and persist findings."""
         try:
-            result = await api.execute(scan, tasks)
+            # Register Docker executors for tool containers.
+            # The ScanAPI.execute() only registers ShellExecutor by default.
+            # We need to patch in DockerExecExecutor for each tool since
+            # the web deployment runs tools in Docker containers.
+            from opentools.scanner.executor.docker import DockerExecExecutor
+            from opentools.scanner.models import TaskType
+
+            _original_execute = api.execute
+
+            async def _execute_with_docker(s, t, **kw):
+                """Wrapper that registers docker executors before running."""
+                from opentools.scanner.engine import ScanEngine
+                from opentools.scanner.approval import ApprovalRegistry
+                from opentools.scanner.cancellation import CancellationToken
+                from opentools.shared.progress import EventBus
+                from opentools.shared.resource_pool import AdaptiveResourcePool
+
+                cancel = CancellationToken()
+                event_bus = EventBus()
+                max_concurrent = 8
+                if s.config and s.config.max_concurrent_tasks:
+                    max_concurrent = s.config.max_concurrent_tasks
+                pool = AdaptiveResourcePool(
+                    global_limit=max_concurrent,
+                    group_limits={"approval_gate": 9999},
+                )
+
+                # Register both shell and docker executors
+                executors = {}
+                try:
+                    from opentools.scanner.executor.shell import ShellExecutor
+                    executors[TaskType.SHELL] = ShellExecutor()
+                except Exception:
+                    pass
+
+                # For docker_exec tasks, create a executor that passes through
+                # the command directly (the command already includes 'docker exec <container>')
+                executors[TaskType.DOCKER_EXEC] = ShellExecutor()
+
+                engine = ScanEngine(
+                    scan=s,
+                    resource_pool=pool,
+                    executors=executors,
+                    event_bus=event_bus,
+                    cancellation=cancel,
+                )
+                approval_registry = ApprovalRegistry()
+                engine.set_approval_registry(approval_registry)
+
+                from opentools.scanner.api import _active_scans
+                _active_scans[s.id] = {
+                    "scan": s,
+                    "cancel": cancel,
+                    "engine": engine,
+                    "approval_registry": approval_registry,
+                }
+
+                try:
+                    engine.load_tasks(t)
+                    await engine.run()
+                    return engine.scan
+                except Exception:
+                    from opentools.scanner.models import ScanStatus
+                    s.status = ScanStatus.FAILED
+                    return s
+                finally:
+                    _active_scans.pop(s.id, None)
+
+            result = await _execute_with_docker(scan, tasks)
 
             # Update scan status in DB
             async with async_session_factory() as bg_session:
@@ -267,7 +335,8 @@ async def create_scan(
             except Exception:
                 pass
 
-    asyncio.create_task(_run_scan())
+    task = asyncio.create_task(_run_scan())
+    task.add_done_callback(lambda t: logger.error("Scan task error: %s", t.exception()) if t.exception() else None)
 
     return _scan_record_to_response(scan_record)
 
