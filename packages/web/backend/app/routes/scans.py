@@ -323,10 +323,29 @@ async def create_scan(
                     logger.warning("Some containers may not be ready after 30s, proceeding anyway")
 
             # Clear dependencies so all tools run in parallel.
-            # The planner builds a phased DAG (recon → scan → exploit)
-            # but for web deployment all tools can run independently.
             for task in tasks:
                 task.depends_on = []
+
+            # Fix tool commands for container versions.
+            # The planner generates commands for specific CLI versions
+            # but container builds may have different flags.
+            target_url = scan.target
+            target_host = target_url.replace("https://", "").replace("http://", "").split("/")[0]
+            for task in tasks:
+                if task.tool == "nuclei":
+                    # v3 uses -jsonl not -json
+                    task.command = f"nuclei -u {target_url} -jsonl"
+                elif task.tool == "whatweb":
+                    # --log-json=- has pipe issues in containers, use --log-json=/tmp/out.json
+                    task.command = f"sh -c 'whatweb --color=never --log-json=/tmp/out.json {target_url} >/dev/null 2>&1; cat /tmp/out.json'"
+                elif task.tool == "nikto":
+                    task.command = f"nikto -h {target_url} -Format json -output /tmp/out.json"
+                elif task.tool == "sqlmap":
+                    task.command = f"python /opt/sqlmap/sqlmap.py -u {target_url} --batch --forms --crawl=2 --output-dir=/tmp/sqlmap"
+                elif task.tool == "ffuf":
+                    task.command = f"ffuf -u {target_url}/FUZZ -w /usr/share/wordlists/common.txt -o /tmp/out.json -of json -mc 200,301,302,403"
+                elif task.tool == "waybackurls":
+                    task.command = f"sh -c 'echo {target_host} | waybackurls'"
 
             # Rewrite task commands to go through docker exec
             for task in tasks:
