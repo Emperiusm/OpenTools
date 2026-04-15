@@ -444,25 +444,42 @@ async def create_scan(
                     except Exception as exc:
                         print(f"[SCAN] task update failed for {task_obj.id}: {exc}", flush=True)
 
-                # Parse tool output into findings
+                # Parse tool output into findings via the full parsing pipeline
                 from opentools.scanner.parsing.router import ParserRouter
-                from opentools.scanner.parsing.parsers import nmap as nmap_parser
+                from opentools.scanner.parsing.parsers.nmap import NmapParser
+                from opentools.scanner.parsing.parsers.generic_json import GenericJsonParser
                 from datetime import datetime, timezone
                 import uuid as _uuid
 
-                # Build parser router with available parsers
+                # Build parser router with all available parsers
                 parser_router = ParserRouter()
-                try:
-                    parser_router.register(nmap_parser.PARSER)
-                except Exception:
-                    pass
-                # Register other available parsers
-                for parser_mod_name in ["generic_json", "semgrep", "trivy", "gitleaks"]:
+                parser_router.register(NmapParser())
+                parser_router.register(GenericJsonParser())
+
+                # Register dedicated parsers if available
+                for parser_mod_name, parser_class_name in [
+                    ("semgrep", "SemgrepParser"),
+                    ("trivy", "TrivyParser"),
+                    ("gitleaks", "GitleaksParser"),
+                ]:
                     try:
-                        mod = __import__(f"opentools.scanner.parsing.parsers.{parser_mod_name}", fromlist=["PARSER"])
-                        parser_router.register(mod.PARSER)
+                        mod = __import__(
+                            f"opentools.scanner.parsing.parsers.{parser_mod_name}",
+                            fromlist=[parser_class_name],
+                        )
+                        parser_cls = getattr(mod, parser_class_name)
+                        parser_router.register(parser_cls())
                     except Exception:
                         pass
+
+                # Map tool names to parser names (tools that don't have a
+                # dedicated parser fall through to generic_json)
+                _TOOL_TO_PARSER = {
+                    "nmap": "nmap",
+                    "semgrep": "semgrep",
+                    "trivy": "trivy",
+                    "gitleaks": "gitleaks",
+                }
 
                 finding_count = 0
                 for task_obj in tasks:
@@ -472,35 +489,65 @@ async def create_scan(
                     if not stdout:
                         continue
 
-                    # Try tool-specific parser first, then generic_json
-                    parser = parser_router.get(task_obj.tool) or parser_router.get("generic_json")
+                    # Select parser: tool-specific → generic_json fallback
+                    parser_name = _TOOL_TO_PARSER.get(task_obj.tool)
+                    parser = None
+                    if parser_name:
+                        parser = parser_router.get(parser_name)
                     if parser is None:
-                        print(f"[SCAN] {scan.id}: no parser for {task_obj.tool}, skipping", flush=True)
+                        parser = parser_router.get("generic_json")
+                    if parser is None:
+                        print(f"[SCAN] {scan.id}: no parser available for {task_obj.tool}", flush=True)
                         continue
 
+                    # Validate before parsing
+                    data = stdout.encode()
+                    if not parser.validate(data):
+                        # Try generic_json as fallback if tool-specific parser rejects
+                        fallback = parser_router.get("generic_json")
+                        if fallback and fallback is not parser and fallback.validate(data):
+                            parser = fallback
+                        else:
+                            print(f"[SCAN] {scan.id}: {parser.name} rejected output from {task_obj.tool} ({len(data)}b)", flush=True)
+                            continue
+
                     try:
-                        for raw_finding in parser.parse(stdout.encode(), scan.id, task_obj.id):
+                        raw_findings = list(parser.parse(data, scan.id, task_obj.id))
+                        print(f"[SCAN] {scan.id}: {parser.name} parsed {len(raw_findings)} findings from {task_obj.tool}", flush=True)
+
+                        for raw_finding in raw_findings:
                             from app.models import Finding as WebFinding
+
+                            # Map severity: parsers use raw_severity, normalize to our levels
+                            sev = raw_finding.raw_severity.lower()
+                            severity_map = {
+                                "critical": "critical", "high": "high",
+                                "medium": "medium", "low": "low",
+                                "info": "info", "informational": "info",
+                                "warning": "medium", "error": "high",
+                            }
+                            severity = severity_map.get(sev, "info")
+
                             finding_id = f"fnd-{_uuid.uuid4().hex[:12]}"
                             finding = WebFinding(
                                 id=finding_id,
                                 engagement_id=scan.engagement_id,
                                 user_id=user.id,
                                 tool=task_obj.tool,
-                                title=getattr(raw_finding, "title", f"{task_obj.tool} finding"),
-                                description=getattr(raw_finding, "description", ""),
-                                severity=getattr(raw_finding, "severity", "medium"),
+                                title=raw_finding.title,
+                                description=raw_finding.description or "",
+                                severity=severity,
                                 status="open",
-                                evidence=getattr(raw_finding, "evidence", ""),
-                                file_path=getattr(raw_finding, "file_path", None),
-                                cwe=getattr(raw_finding, "cwe", None),
-                                cvss=getattr(raw_finding, "cvss", None),
+                                evidence=raw_finding.evidence or "",
+                                file_path=raw_finding.file_path,
+                                cwe=raw_finding.cwe,
                                 created_at=datetime.now(timezone.utc),
                             )
                             bg_session.add(finding)
                             finding_count += 1
                     except Exception as exc:
                         print(f"[SCAN] {scan.id}: parse failed for {task_obj.tool}: {exc}", flush=True)
+                        import traceback; traceback.print_exc()
 
                 # Update scan record
                 scan_rec = await bg_svc.get_scan(scan.id)
