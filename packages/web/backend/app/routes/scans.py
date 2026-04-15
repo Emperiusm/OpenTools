@@ -339,7 +339,9 @@ async def create_scan(
                     # --log-json=- has pipe issues in containers, use --log-json=/tmp/out.json
                     task.command = f"sh -c 'whatweb --color=never --log-json=/tmp/out.json {target_url} >/dev/null 2>&1; cat /tmp/out.json'"
                 elif task.tool == "nikto":
-                    task.command = f"nikto -h {target_url} -Format json -output /tmp/out.json"
+                    # nikto-mcp's MCP server crashes on start, so use docker run instead of exec
+                    task.command = f"docker run --rm --entrypoint sh nikto-mcp:latest -c 'nikto -h {target_url} -Format json -output /dev/stdout 2>/dev/null'"
+                    task._skip_docker_exec = True  # flag to skip docker exec wrapping
                 elif task.tool == "sqlmap":
                     task.command = f"python /opt/sqlmap/sqlmap.py -u {target_url} --batch --forms --crawl=2 --output-dir=/tmp/sqlmap"
                 elif task.tool == "ffuf":
@@ -365,6 +367,9 @@ async def create_scan(
 
             # Rewrite task commands to go through docker exec
             for task in tasks:
+                if getattr(task, "_skip_docker_exec", False):
+                    print(f"[SCAN] {scan.id}: {task.tool} uses custom docker command", flush=True)
+                    continue
                 container = _TOOL_CONTAINERS.get(task.tool)
                 if container and task.command and not task.command.startswith("docker "):
                     task.command = f"docker exec {container} {task.command}"
