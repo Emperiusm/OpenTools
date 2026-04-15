@@ -57,6 +57,7 @@ const { data: subgraphData, isLoading, refetch } = useQuery({
 const graphData = computed(() => subgraphData.value?.graph ?? { nodes: [], links: [] })
 const meta = computed(() => subgraphData.value?.meta ?? { total_findings: 0, rendered_findings: 0, filtered: false, generation: 0, engagements: [] })
 const isEmpty = computed(() => !isLoading.value && meta.value.total_findings === 0)
+const hasNoRelations = computed(() => !isLoading.value && meta.value.total_findings > 0 && graphData.value.links.length === 0 && graphData.value.nodes.length === 0)
 
 const ENGAGEMENT_COLORS = [
   '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
@@ -183,7 +184,7 @@ function toggleLayout() {
       <ProgressSpinner />
     </div>
 
-    <div v-else-if="isEmpty" class="flex-1 flex items-center justify-center">
+    <div v-else-if="isEmpty || hasNoRelations" class="flex-1 flex items-center justify-center">
       <ChainEmptyState
         :engagement-id="engagementIds?.length === 1 ? engagementIds[0] : ''"
         @rebuild-complete="refetch()"
