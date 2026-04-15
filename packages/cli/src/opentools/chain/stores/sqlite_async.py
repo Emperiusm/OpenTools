@@ -454,6 +454,16 @@ class AsyncChainStore:
         return [_row_to_mention(row) for row in rows]
 
     @require_initialized
+    async def fetch_all_mentions_in_scope(
+        self, *, user_id, engagement_ids: list[str] | None = None
+    ) -> list[EntityMention]:
+        async with self._conn.execute(
+            "SELECT * FROM entity_mention",
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_row_to_mention(row) for row in rows]
+
+    @require_initialized
     async def delete_mentions_for_finding(
         self, finding_id: str, *, user_id
     ) -> int:

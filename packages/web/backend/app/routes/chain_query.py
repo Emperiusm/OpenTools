@@ -6,7 +6,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_db
 from app.models import User
 
 router = APIRouter(prefix="/api/chain/query", tags=["chain-query"])
@@ -32,35 +32,56 @@ class QueryResponse(BaseModel):
 async def execute_query(
     request: QueryRequest,
     current_user: User = Depends(get_current_user),
+    db=Depends(get_db),
 ):
-    """Execute a Cypher query against the attack chain knowledge graph.
-
-    NOTE: Full integration with PostgresChainStore requires the store
-    to implement fetch_all_mentions_in_scope. This endpoint is a
-    placeholder that validates the request and returns proper error
-    responses. Full store integration will be wired up when the
-    PostgresChainStore backend method is implemented.
-    """
+    """Execute a Cypher query against the attack chain knowledge graph."""
+    from opentools.chain.config import get_chain_config
+    from opentools.chain.cypher import parse_and_execute
     from opentools.chain.cypher.errors import QueryParseError, QueryResourceError, QueryValidationError
-    from opentools.chain.cypher.parser import parse_cypher
-    from opentools.chain.cypher.planner import plan_query
     from opentools.chain.cypher.limits import QueryLimits
+    from opentools.chain.cypher.virtual_graph import VirtualGraphCache
+    from opentools.chain.query.graph_cache import GraphCache
+    from app.services.chain_store_factory import chain_store_from_session
 
     try:
-        # Validate the query parses successfully
-        limits = QueryLimits(timeout_seconds=request.timeout, max_rows=request.max_rows)
-        ast = parse_cypher(request.query)
-        plan = plan_query(ast, limits)
+        cfg = get_chain_config()
+        store = chain_store_from_session(db)
+        await store.initialize()
 
-        # For now return an empty result - full execution requires
-        # PostgresChainStore.fetch_all_mentions_in_scope which is
-        # defined in the protocol but not yet implemented in the backend
+        graph_cache = GraphCache(store=store, maxsize=cfg.query.graph_cache_size)
+        vg_cache = VirtualGraphCache(store=store, graph_cache=graph_cache, maxsize=cfg.cypher.virtual_graph_cache_size)
+
+        engagement_ids = frozenset([request.engagement_id]) if request.engagement_id else None
+        limits = QueryLimits(timeout_seconds=request.timeout, max_rows=request.max_rows)
+
+        result = await parse_and_execute(
+            request.query,
+            store=store,
+            graph_cache=graph_cache,
+            vg_cache=vg_cache,
+            user_id=current_user.id,
+            include_candidates=request.include_candidates,
+            engagement_ids=engagement_ids,
+            limits=limits,
+        )
+
+        subgraph_data = None
+        if result.subgraph:
+            subgraph_data = {
+                "nodes": [{"index": idx} for idx in result.subgraph.node_indices],
+                "edges": [{"source": s, "target": t} for s, t in result.subgraph.edge_tuples],
+            }
+
         return QueryResponse(
-            columns=[],
-            rows=[],
-            subgraph=None,
-            stats={"duration_ms": 0, "bindings_explored": 0, "rows_returned": 0},
-            truncated=False,
+            columns=result.columns,
+            rows=result.rows,
+            subgraph=subgraph_data,
+            stats={
+                "duration_ms": result.stats.duration_ms,
+                "bindings_explored": result.stats.bindings_explored,
+                "rows_returned": result.stats.rows_returned,
+            },
+            truncated=result.truncated,
         )
 
     except QueryParseError as e:
