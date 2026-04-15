@@ -64,10 +64,11 @@ function cypherComplete(context: any) {
 // Custom Cypher highlighting via simple syntax tag coloring
 const cypherTheme = EditorView.theme({
   '&': { fontSize: '14px', fontFamily: "'Fira Code', 'Cascadia Code', monospace" },
-  '.cm-content': { minHeight: '80px' },
+  '.cm-content': { minHeight: '80px', caretColor: '#fff' },
   '.cm-gutters': { display: 'none' },
   '&.cm-focused': { outline: 'none' },
-})
+  '.cm-scroller': { overflow: 'auto' },
+}, { dark: true })
 
 onMounted(() => {
   if (!editorContainer.value) return
@@ -130,21 +131,23 @@ watch(() => props.modelValue, (newVal) => {
 .cypher-editor {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border-color, #ddd);
-  border-radius: 4px;
+  border: 1px solid var(--p-surface-700, #333);
+  border-radius: 6px;
   overflow: hidden;
 }
 .editor-container {
   min-height: 80px;
   max-height: 200px;
   overflow: auto;
+  background: var(--p-surface-900, #1a1a2e);
+  color: var(--p-surface-0, #e0e0e0);
 }
 .editor-actions {
   display: flex;
   justify-content: flex-end;
   padding: 4px 8px;
-  border-top: 1px solid var(--border-color, #ddd);
-  background: #f8f8f8;
+  border-top: 1px solid var(--p-surface-700, #333);
+  background: var(--p-surface-800, #16213e);
 }
 .run-btn {
   padding: 4px 12px;
