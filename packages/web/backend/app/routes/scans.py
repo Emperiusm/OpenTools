@@ -247,6 +247,32 @@ async def create_scan(
 
             _original_execute = api.execute
 
+            # Tool name → Docker container name mapping.
+            # Tools run in mcp-security-hub containers, accessed via docker exec.
+            _TOOL_CONTAINERS = {
+                "nmap": "nmap-mcp",
+                "nuclei": "nuclei-mcp",
+                "nikto": "nikto-mcp",
+                "ffuf": "ffuf-mcp",
+                "sqlmap": "sqlmap-mcp",
+                "whatweb": "whatweb-mcp",
+                "waybackurls": "waybackurls-mcp",
+                "masscan": "masscan-mcp",
+                "gitleaks": "gitleaks-mcp",
+                "trivy": "trivy-mcp",
+                "searchsploit": "searchsploit-mcp",
+                "dnstwist": "dnstwist-mcp",
+                "capa": "capa-mcp",
+                "yara": "yara-mcp",
+                "binwalk": "binwalk-mcp",
+            }
+
+            # Rewrite task commands to go through docker exec
+            for task in t:
+                container = _TOOL_CONTAINERS.get(task.tool)
+                if container and task.command and not task.command.startswith("docker "):
+                    task.command = f"docker exec {container} {task.command}"
+
             async def _execute_with_docker(s, t, **kw):
                 """Wrapper that registers docker executors before running."""
                 from opentools.scanner.engine import ScanEngine
