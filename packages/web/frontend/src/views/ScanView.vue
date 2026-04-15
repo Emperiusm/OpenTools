@@ -158,10 +158,43 @@ async function startScan() {
     uploadStatus.value = ''
     await loadScans()
     activeScanId.value = scan.id
+    // Start polling for status updates
+    startPolling(scan.id)
   } catch (e: any) {
     scanError.value = e.message
   } finally {
     scanning.value = false
+  }
+}
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function startPolling(scanId: string) {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    await loadScans()
+    // Also refresh tasks for the active scan
+    if (activeScanId.value) {
+      try {
+        const res = await fetch(`/api/v1/scans/${activeScanId.value}/tasks`, { credentials: 'include' })
+        if (res.ok) {
+          const data = await res.json()
+          scanTasks.value[activeScanId.value] = data.tasks || []
+        }
+      } catch (e) {}
+    }
+    // Stop polling if scan is done
+    const activeScan = scans.value.find(s => s.id === scanId)
+    if (activeScan && ['completed', 'failed', 'cancelled'].includes(activeScan.status)) {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
@@ -213,7 +246,7 @@ function toggleScan(scanId: string) {
 
         <div class="flex items-center gap-3">
           <Button
-            label="Start Scan"
+            :label="scanning ? 'Starting containers & scan...' : 'Start Scan'"
             icon="pi pi-play"
             :loading="scanning"
             :disabled="!target || !engagementId"

@@ -298,9 +298,28 @@ async def create_scan(
                     except Exception as exc:
                         logger.warning("Failed to start container %s: %s", cname, exc)
 
-                # Brief pause for containers to initialize
+                # Wait for containers to be ready (poll until running, max 30s)
                 import asyncio as _aio
-                await _aio.sleep(2)
+                for attempt in range(15):
+                    all_ready = True
+                    for cname in needed_containers:
+                        try:
+                            check = subprocess.run(
+                                ["docker", "inspect", "-f", "{{.State.Running}}", cname],
+                                capture_output=True, text=True, timeout=5,
+                            )
+                            if check.stdout.strip() != "true":
+                                all_ready = False
+                                break
+                        except Exception:
+                            all_ready = False
+                            break
+                    if all_ready:
+                        logger.info("All %d containers ready after %ds", len(needed_containers), attempt * 2)
+                        break
+                    await _aio.sleep(2)
+                else:
+                    logger.warning("Some containers may not be ready after 30s, proceeding anyway")
 
             # Rewrite task commands to go through docker exec
             for task in t:
