@@ -12,6 +12,7 @@ import ChainFilterToolbar from '@/components/ChainFilterToolbar.vue'
 import ChainLegend from '@/components/ChainLegend.vue'
 import ChainEmptyState from '@/components/ChainEmptyState.vue'
 import InlineQueryPanel from '@/components/InlineQueryPanel.vue'
+import ChainTimelineScrubber from '@/components/ChainTimelineScrubber.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +23,13 @@ const engId = route.params.id as string
 
 // Filter state
 const filters = ref({ severities: [] as string[], statuses: [] as string[] })
+
+const layoutMode = ref<'force' | 'killchain'>('force')
+const timeRange = ref<{ start: Date; end: Date } | null>(null)
+
+function toggleLayout() {
+  layoutMode.value = layoutMode.value === 'force' ? 'killchain' : 'force'
+}
 
 function onFilterChange(f: { severities: string[]; statuses: string[] }) {
   filters.value = f
@@ -166,6 +174,36 @@ function onRebuildComplete() {
   refetch()
 }
 
+async function onExportPath() {
+  if (!selectedLink.value) return
+  const srcId = typeof selectedLink.value.source === 'string' ? selectedLink.value.source : selectedLink.value.source.id
+  const tgtId = typeof selectedLink.value.target === 'string' ? selectedLink.value.target : selectedLink.value.target.id
+
+  try {
+    const resp = await fetch('/api/chain/export/path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        finding_ids: [srcId, tgtId],
+        engagement_id: engId,
+      }),
+    })
+    if (!resp.ok) throw new Error('Export failed')
+    const data = await resp.json()
+
+    const blob = new Blob([data.markdown], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'attack-path-report.md'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to export path', life: 3000 })
+  }
+}
+
 // Engagement name for header
 const { data: engagement } = useQuery({
   queryKey: ['engagement', engId],
@@ -189,6 +227,12 @@ function onQueryHighlight(nodeIds: string[]) {
       <div class="flex-1">
         <ChainFilterToolbar @filter-change="onFilterChange" />
       </div>
+      <Button
+        :label="layoutMode === 'force' ? 'Kill Chain' : 'Force'"
+        icon="pi pi-th-large"
+        text size="small"
+        @click="toggleLayout"
+      />
     </div>
 
     <!-- Main content -->
@@ -207,6 +251,8 @@ function onQueryHighlight(nodeIds: string[]) {
           :selected-node-id="selectedNode?.id ?? null"
           :selected-link-id="selectedLink?.id ?? null"
           :highlighted-node-ids="highlightedNodeIds"
+          :time-range="timeRange"
+          :layout-mode="layoutMode"
           class="flex-1"
           @node-click="onNodeClick"
           @link-click="onLinkClick"
@@ -220,10 +266,17 @@ function onQueryHighlight(nodeIds: string[]) {
           @confirm="onConfirm"
           @reject="onReject"
           @expand="onExpand"
+          @export-path="onExportPath"
         />
         <InlineQueryPanel :engagement-id="engId" @highlight="onQueryHighlight" />
       </div>
     </template>
+
+    <!-- Timeline scrubber -->
+    <ChainTimelineScrubber
+      :nodes="graphData.nodes"
+      @time-range-change="(r: any) => timeRange = r"
+    />
 
     <!-- Legend -->
     <ChainLegend

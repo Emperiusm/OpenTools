@@ -14,6 +14,7 @@ const menuItems = [
   { label: 'Engagements', icon: 'pi pi-shield', command: () => router.push('/engagements') },
   { label: 'Recipes', icon: 'pi pi-play', command: () => router.push('/recipes') },
   { label: 'Containers', icon: 'pi pi-box', command: () => router.push('/containers') },
+  { label: 'Attack Chain', icon: 'pi pi-share-alt', command: () => router.push('/chain/global') },
   {
     label: 'IOCs', icon: 'pi pi-search',
     items: [

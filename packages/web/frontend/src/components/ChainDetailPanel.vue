@@ -10,6 +10,7 @@ interface GraphNode {
   tool: string
   phase: string | null
   neighborCount?: number
+  pivotality?: number
 }
 
 interface GraphLink {
@@ -22,6 +23,7 @@ interface GraphLink {
   reasons: string[]
   relation_type: string | null
   rationale: string | null
+  weight_model_version?: string
 }
 
 const props = defineProps<{
@@ -35,6 +37,7 @@ const emit = defineEmits<{
   (e: 'confirm', linkId: string): void
   (e: 'reject', linkId: string): void
   (e: 'expand', nodeId: string): void
+  (e: 'export-path'): void
 }>()
 
 function findNode(ref: string | { id: string }): GraphNode | undefined {
@@ -86,6 +89,9 @@ function getStatusDisplay(status: string) {
         <div v-if="selectedNode.neighborCount !== undefined" class="text-sm text-surface-500 dark:text-surface-400">
           <span class="font-medium">Neighbors:</span> {{ selectedNode.neighborCount }}
         </div>
+        <div v-if="selectedNode.pivotality && selectedNode.pivotality > 0.1" class="text-sm text-surface-500 dark:text-surface-400">
+          <span class="font-medium">Pivotality:</span> {{ (selectedNode.pivotality * 100).toFixed(0) }}%
+        </div>
       </div>
       <Button
         label="Expand Neighbors"
@@ -121,6 +127,11 @@ function getStatusDisplay(status: string) {
         <Tag
           :value="getStatusDisplay(selectedLink.status).label"
           :severity="getStatusDisplay(selectedLink.status).severity"
+        />
+        <Tag
+          v-if="selectedLink.weight_model_version === 'bayesian_v1'"
+          value="Calibrated"
+          severity="info"
         />
         <Tag
           v-if="selectedLink.relation_type"
@@ -175,6 +186,16 @@ function getStatusDisplay(status: string) {
           class="flex-1"
         />
       </div>
+
+      <!-- Export path -->
+      <Button
+        label="Export Path"
+        icon="pi pi-download"
+        outlined
+        size="small"
+        class="mt-2"
+        @click="emit('export-path')"
+      />
     </template>
   </div>
 </template>
