@@ -37,12 +37,14 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       OPENTOOLS_PLUGIN_DIR: /app/packages/plugin
+      OPENTOOLS_WORKSPACE: /workspace
     depends_on:
       migrate:
         condition: service_completed_successfully
     volumes:
       - appdata:/app/data
       - //var/run/docker.sock:/var/run/docker.sock
+      - ${WORKSPACE_DIR:-C:/Users/slabl/workspace}:/workspace
     ports:
       - "8000:8000"
     networks:

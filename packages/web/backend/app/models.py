@@ -89,6 +89,10 @@ class UserCreate(fu_schemas.BaseUserCreate):
     pass
 
 
+class UserUpdate(fu_schemas.BaseUserUpdate):
+    pass
+
+
 # --- Engagement -----------------------------------------------------------
 # ORM projection of opentools.models.Engagement; adds user_id FK.
 

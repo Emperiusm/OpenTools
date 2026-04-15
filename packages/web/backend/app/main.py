@@ -8,7 +8,7 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from app.auth import fastapi_users, auth_backend
 from app.config import settings
-from app.models import UserRead, UserCreate
+from app.models import UserRead, UserCreate, UserUpdate
 from app.routes import (
     engagements,
     findings,
@@ -56,6 +56,11 @@ app.include_router(
 )
 app.include_router(
     fastapi_users.get_register_router(UserRead, UserCreate),
+    prefix="/api/v1/auth",
+    tags=["auth"],
+)
+app.include_router(
+    fastapi_users.get_users_router(UserRead, UserUpdate),
     prefix="/api/v1/auth",
     tags=["auth"],
 )

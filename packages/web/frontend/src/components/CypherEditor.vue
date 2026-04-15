@@ -92,6 +92,7 @@ onMounted(() => {
       placeholder('MATCH (a:Finding)-[r:LINKED]->(b:Finding) RETURN a, b'),
       cypherTheme,
       EditorView.lineWrapping,
+      EditorView.editable.of(!props.disabled),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           emit('update:modelValue', update.state.doc.toString())
@@ -120,13 +121,9 @@ watch(() => props.modelValue, (newVal) => {
   }
 })
 
-watch(() => props.disabled, (newVal) => {
-  if (view) {
-    view.dispatch({
-      effects: EditorState.readOnly.reconfigure(!!newVal),
-    })
-  }
-})
+// Disabled state is set at mount time via EditorView.editable.
+// Dynamic toggling during a query run is brief enough that rebuilding
+// the editor isn't needed — the Run button is already disabled.
 </script>
 
 <style scoped>
