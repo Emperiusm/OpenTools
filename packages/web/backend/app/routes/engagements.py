@@ -110,3 +110,31 @@ async def update_engagement_status(
     if not engagement:
         raise HTTPException(status_code=404, detail="Engagement not found")
     return engagement
+
+
+@router.get("/{engagement_id}/timeline")
+async def get_engagement_timeline(
+    engagement_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return timeline events for an engagement."""
+    service = EngagementService(db, user)
+    summary = await service.get_summary(engagement_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    return {"items": []}
+
+
+@router.get("/{engagement_id}/artifacts")
+async def get_engagement_artifacts(
+    engagement_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return artifacts for an engagement."""
+    service = EngagementService(db, user)
+    summary = await service.get_summary(engagement_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    return {"items": []}
