@@ -267,6 +267,41 @@ async def create_scan(
                 "binwalk": "binwalk-mcp",
             }
 
+            # Auto-start required tool containers
+            needed_containers = set()
+            for task in t:
+                container = _TOOL_CONTAINERS.get(task.tool)
+                if container:
+                    needed_containers.add(container)
+
+            if needed_containers:
+                import subprocess
+                for cname in needed_containers:
+                    try:
+                        # Check if container exists and is running
+                        check = subprocess.run(
+                            ["docker", "inspect", "-f", "{{.State.Running}}", cname],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if check.returncode != 0:
+                            logger.warning("Container %s does not exist, skipping", cname)
+                            continue
+                        if check.stdout.strip() == "true":
+                            continue  # already running
+
+                        # Start the container
+                        logger.info("Auto-starting container %s", cname)
+                        subprocess.run(
+                            ["docker", "start", cname],
+                            capture_output=True, timeout=30,
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to start container %s: %s", cname, exc)
+
+                # Brief pause for containers to initialize
+                import asyncio as _aio
+                await _aio.sleep(2)
+
             # Rewrite task commands to go through docker exec
             for task in t:
                 container = _TOOL_CONTAINERS.get(task.tool)
@@ -350,7 +385,7 @@ async def create_scan(
                     )
                     await bg_session.commit()
         except Exception as exc:
-            logger.error("Scan %s failed: %s", scan.id, exc)
+            logger.error("Scan %s failed: %s", scan.id, exc, exc_info=True)
             try:
                 async with async_session_factory() as bg_session:
                     bg_svc = ScanService(bg_session, user)
@@ -360,6 +395,19 @@ async def create_scan(
                         await bg_session.commit()
             except Exception:
                 pass
+        finally:
+            # Auto-stop containers that were started for this scan
+            if needed_containers:
+                import subprocess
+                for cname in needed_containers:
+                    try:
+                        logger.info("Auto-stopping container %s", cname)
+                        subprocess.run(
+                            ["docker", "stop", cname],
+                            capture_output=True, timeout=15,
+                        )
+                    except Exception:
+                        pass
 
     task = asyncio.create_task(_run_scan())
     task.add_done_callback(lambda t: logger.error("Scan task error: %s", t.exception()) if t.exception() else None)
