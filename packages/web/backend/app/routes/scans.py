@@ -9,16 +9,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import shutil
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import async_session_factory
 from app.dependencies import get_current_user, get_db
 from app.models import ScanRecord, ScanTaskRecord, User
 from app.services.scan_service import ScanService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -228,7 +234,69 @@ async def create_scan(
     ]
     await svc.persist_tasks(task_records)
 
+    # Start execution in the background
+    async def _run_scan():
+        """Background task: execute scan and persist findings."""
+        try:
+            result = await api.execute(scan, tasks)
+
+            # Update scan status in DB
+            async with async_session_factory() as bg_session:
+                bg_svc = ScanService(bg_session, user)
+                scan_rec = await bg_svc.get_scan(scan.id)
+                if scan_rec:
+                    scan_rec.status = result.status.value
+                    scan_rec.completed_at = result.completed_at
+                    scan_rec.finding_count = result.finding_count
+                    scan_rec.tools_completed = json.dumps(
+                        getattr(result, "tools_completed", [])
+                    )
+                    scan_rec.tools_failed = json.dumps(
+                        getattr(result, "tools_failed", [])
+                    )
+                    await bg_session.commit()
+        except Exception as exc:
+            logger.error("Scan %s failed: %s", scan.id, exc)
+            try:
+                async with async_session_factory() as bg_session:
+                    bg_svc = ScanService(bg_session, user)
+                    scan_rec = await bg_svc.get_scan(scan.id)
+                    if scan_rec:
+                        scan_rec.status = "failed"
+                        await bg_session.commit()
+            except Exception:
+                pass
+
+    asyncio.create_task(_run_scan())
+
     return _scan_record_to_response(scan_record)
+
+
+@router.post("/upload")
+async def upload_scan_target(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+):
+    """Upload a file for scanning. Returns the workspace path to use as scan target."""
+    workspace = os.environ.get("OPENTOOLS_WORKSPACE", "/workspace")
+
+    # Create user-scoped directory
+    user_dir = os.path.join(workspace, str(user.id))
+    os.makedirs(user_dir, exist_ok=True)
+
+    # Sanitize filename
+    safe_name = os.path.basename(file.filename or "upload")
+    # Remove any path traversal attempts
+    safe_name = safe_name.replace("..", "").replace("/", "").replace("\\", "")
+    if not safe_name:
+        safe_name = "upload"
+
+    dest = os.path.join(user_dir, safe_name)
+
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    return {"path": dest, "filename": safe_name, "size": os.path.getsize(dest)}
 
 
 @router.get("")
