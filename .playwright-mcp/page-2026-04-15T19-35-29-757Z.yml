@@ -1,0 +1,45 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e6]: OpenTools
+    - menubar [ref=e7]:
+      - menuitem "Engagements" [ref=e8]:
+        - generic [ref=e10] [cursor=pointer]:
+          - generic [ref=e11]: 
+          - generic [ref=e12]: Engagements
+      - menuitem "Recipes" [ref=e13]:
+        - generic [ref=e15] [cursor=pointer]:
+          - generic [ref=e16]: 
+          - generic [ref=e17]: Recipes
+      - menuitem "Scans" [ref=e18]:
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: 
+          - generic [ref=e22]: Scans
+      - menuitem "Containers" [ref=e23]:
+        - generic [ref=e25] [cursor=pointer]:
+          - generic [ref=e26]: 
+          - generic [ref=e27]: Containers
+      - menuitem "Attack Chain" [ref=e28]:
+        - generic [ref=e30] [cursor=pointer]:
+          - generic [ref=e31]: 
+          - generic [ref=e32]: Attack Chain
+      - menuitem "IOCs" [ref=e33]:
+        - generic [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: 
+          - generic [ref=e37]: IOCs
+          - img [ref=e38]
+        - text:  
+    - generic [ref=e40]:
+      - text: test@test.com
+      - button "" [ref=e41] [cursor=pointer]:
+        - generic [ref=e42]: 
+  - generic [ref=e43]:
+    - complementary
+    - main [ref=e44]:
+      - generic [ref=e45]:
+        - generic [ref=e46]:
+          - heading "Engagements" [level=1] [ref=e47]
+          - button "New Engagement" [ref=e48] [cursor=pointer]:
+            - generic [ref=e49]: 
+            - generic [ref=e50]: New Engagement
+        - progressbar [ref=e52]:
+          - img [ref=e53]

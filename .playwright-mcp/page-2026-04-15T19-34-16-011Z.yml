@@ -1,0 +1,13 @@
+- generic [ref=e35]:
+  - generic [ref=e36]:
+    - generic [ref=e37]: OpenTools Dashboard
+    - generic [ref=e38]: Sign in to continue
+  - generic [ref=e40]:
+    - textbox "Email" [ref=e41]
+    - textbox "Password" [ref=e42]
+    - button "Sign In" [ref=e43] [cursor=pointer]:
+      - generic [ref=e44]: Sign In
+  - paragraph [ref=e46]:
+    - text: Don't have an account?
+    - link "Register" [ref=e47] [cursor=pointer]:
+      - /url: /register

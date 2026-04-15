@@ -1,0 +1,13 @@
+- generic [ref=e5]:
+  - generic [ref=e6]:
+    - generic [ref=e7]: OpenTools Dashboard
+    - generic [ref=e8]: Sign in to continue
+  - generic [ref=e10]:
+    - textbox "Email" [ref=e11]: admin@slabsofficial.com
+    - textbox "Password" [ref=e12]: admin
+    - button "Sign In" [ref=e13] [cursor=pointer]:
+      - generic [ref=e14]: Sign In
+  - paragraph [ref=e16]:
+    - text: Don't have an account?
+    - link "Register" [ref=e17] [cursor=pointer]:
+      - /url: /register
