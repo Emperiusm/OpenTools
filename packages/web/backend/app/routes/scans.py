@@ -237,6 +237,7 @@ async def create_scan(
     # Start execution in the background
     async def _run_scan():
         """Background task: execute scan and persist findings."""
+        print(f"[SCAN] {scan.id}: background task started ({len(tasks)} tasks)", flush=True)
         try:
             # Register Docker executors for tool containers.
             # The ScanAPI.execute() only registers ShellExecutor by default.
@@ -321,11 +322,20 @@ async def create_scan(
                 else:
                     logger.warning("Some containers may not be ready after 30s, proceeding anyway")
 
+            # Clear dependencies so all tools run in parallel.
+            # The planner builds a phased DAG (recon → scan → exploit)
+            # but for web deployment all tools can run independently.
+            for task in tasks:
+                task.depends_on = []
+
             # Rewrite task commands to go through docker exec
             for task in tasks:
                 container = _TOOL_CONTAINERS.get(task.tool)
                 if container and task.command and not task.command.startswith("docker "):
                     task.command = f"docker exec {container} {task.command}"
+                    print(f"[SCAN] {scan.id}: rewritten {task.tool} -> docker exec {container}", flush=True)
+
+            print(f"[SCAN] {scan.id}: starting execution with {len(tasks)} tasks", flush=True)
 
             async def _execute_with_docker(s, t, **kw):
                 """Wrapper that registers docker executors before running."""
@@ -377,9 +387,16 @@ async def create_scan(
 
                 try:
                     engine.load_tasks(t)
+                    print(f"[SCAN] {s.id}: engine loaded {len(t)} tasks, ready: {engine.ready_task_ids()}", flush=True)
+                    print(f"[SCAN] {s.id}: executors: {list(executors.keys())}", flush=True)
+                    for tt in t:
+                        print(f"[SCAN] {s.id}: task {tt.tool} type={tt.task_type} cmd={(tt.command or '')[:80]}", flush=True)
                     await engine.run()
+                    print(f"[SCAN] {s.id}: engine finished, status={engine.scan.status}", flush=True)
                     return engine.scan
-                except Exception:
+                except Exception as exc:
+                    print(f"[SCAN ERROR] {s.id}: engine error: {exc}", flush=True)
+                    import traceback; traceback.print_exc()
                     from opentools.scanner.models import ScanStatus
                     s.status = ScanStatus.FAILED
                     return s
@@ -388,21 +405,99 @@ async def create_scan(
 
             result = await _execute_with_docker(scan, tasks)
 
-            # Update scan status in DB
+            # Update scan + task statuses in DB and create findings
             async with async_session_factory() as bg_session:
                 bg_svc = ScanService(bg_session, user)
+
+                # Update individual task records from engine state
+                for task_obj in tasks:
+                    try:
+                        from sqlalchemy import update
+                        await bg_session.execute(
+                            update(ScanTaskRecord).where(
+                                ScanTaskRecord.id == task_obj.id
+                            ).values(
+                                status=task_obj.status.value if hasattr(task_obj.status, "value") else str(task_obj.status),
+                                exit_code=getattr(task_obj, "exit_code", None),
+                                duration_ms=getattr(task_obj, "duration_ms", None),
+                            )
+                        )
+                    except Exception as exc:
+                        print(f"[SCAN] task update failed for {task_obj.id}: {exc}", flush=True)
+
+                # Parse tool output into findings
+                from opentools.scanner.parsing.router import ParserRouter
+                from opentools.scanner.parsing.parsers import nmap as nmap_parser
+                from datetime import datetime, timezone
+                import uuid as _uuid
+
+                # Build parser router with available parsers
+                parser_router = ParserRouter()
+                try:
+                    parser_router.register(nmap_parser.PARSER)
+                except Exception:
+                    pass
+                # Register other available parsers
+                for parser_mod_name in ["generic_json", "semgrep", "trivy", "gitleaks"]:
+                    try:
+                        mod = __import__(f"opentools.scanner.parsing.parsers.{parser_mod_name}", fromlist=["PARSER"])
+                        parser_router.register(mod.PARSER)
+                    except Exception:
+                        pass
+
+                finding_count = 0
+                for task_obj in tasks:
+                    stdout = getattr(task_obj, "stdout", "") or ""
+                    stderr = getattr(task_obj, "stderr", "") or ""
+                    print(f"[SCAN] {scan.id}: task {task_obj.tool} status={task_obj.status} exit={getattr(task_obj, 'exit_code', '?')} stdout={len(stdout)}b stderr={len(stderr)}b", flush=True)
+                    if not stdout:
+                        continue
+
+                    # Try tool-specific parser first, then generic_json
+                    parser = parser_router.get(task_obj.tool) or parser_router.get("generic_json")
+                    if parser is None:
+                        print(f"[SCAN] {scan.id}: no parser for {task_obj.tool}, skipping", flush=True)
+                        continue
+
+                    try:
+                        for raw_finding in parser.parse(stdout.encode(), scan.id, task_obj.id):
+                            from app.models import Finding as WebFinding
+                            finding_id = f"fnd-{_uuid.uuid4().hex[:12]}"
+                            finding = WebFinding(
+                                id=finding_id,
+                                engagement_id=scan.engagement_id,
+                                user_id=user.id,
+                                tool=task_obj.tool,
+                                title=getattr(raw_finding, "title", f"{task_obj.tool} finding"),
+                                description=getattr(raw_finding, "description", ""),
+                                severity=getattr(raw_finding, "severity", "medium"),
+                                status="open",
+                                evidence=getattr(raw_finding, "evidence", ""),
+                                file_path=getattr(raw_finding, "file_path", None),
+                                cwe=getattr(raw_finding, "cwe", None),
+                                cvss=getattr(raw_finding, "cvss", None),
+                                created_at=datetime.now(timezone.utc),
+                            )
+                            bg_session.add(finding)
+                            finding_count += 1
+                    except Exception as exc:
+                        print(f"[SCAN] {scan.id}: parse failed for {task_obj.tool}: {exc}", flush=True)
+
+                # Update scan record
                 scan_rec = await bg_svc.get_scan(scan.id)
                 if scan_rec:
                     scan_rec.status = result.status.value
                     scan_rec.completed_at = result.completed_at
-                    scan_rec.finding_count = result.finding_count
+                    scan_rec.finding_count = finding_count
                     scan_rec.tools_completed = json.dumps(
                         getattr(result, "tools_completed", [])
                     )
                     scan_rec.tools_failed = json.dumps(
                         getattr(result, "tools_failed", [])
                     )
-                    await bg_session.commit()
+
+                await bg_session.commit()
+                print(f"[SCAN] {scan.id}: persisted {finding_count} findings, updated {len(tasks)} tasks", flush=True)
         except Exception as exc:
             logger.error("Scan %s failed: %s", scan.id, exc, exc_info=True)
             try:
@@ -415,18 +510,9 @@ async def create_scan(
             except Exception:
                 pass
         finally:
-            # Auto-stop containers that were started for this scan
-            if needed_containers:
-                import subprocess
-                for cname in needed_containers:
-                    try:
-                        logger.info("Auto-stopping container %s", cname)
-                        subprocess.run(
-                            ["docker", "stop", cname],
-                            capture_output=True, timeout=15,
-                        )
-                    except Exception:
-                        pass
+            # Containers are left running for subsequent scans.
+            # Users can stop them manually via the Containers page.
+            pass
 
     task = asyncio.create_task(_run_scan())
     task.add_done_callback(lambda t: logger.error("Scan task error: %s", t.exception()) if t.exception() else None)
