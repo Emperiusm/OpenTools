@@ -339,7 +339,7 @@ async def create_scan(
                     # --log-json=- has pipe issues in containers, use --log-json=/tmp/out.json
                     task.command = f"sh -c 'whatweb --color=never --log-json=/tmp/out.json {target_url} >/dev/null 2>&1; cat /tmp/out.json'"
                 elif task.tool == "nikto":
-                    task.command = f"nikto -h {target_url} -Format json -output /dev/stdout 2>/dev/null"
+                    task.command = f"sh -c 'nikto -h {target_url} -Format json -output /tmp/nikto.json 2>/dev/null; cat /tmp/nikto.json'"
                 elif task.tool == "sqlmap":
                     task.command = f"python /opt/sqlmap/sqlmap.py -u {target_url} --batch --forms --crawl=2 --output-dir=/tmp/sqlmap"
                 elif task.tool == "ffuf":
