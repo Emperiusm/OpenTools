@@ -60,11 +60,7 @@ async def run_rebuild_shared(
     from opentools.chain.linker.engine import LinkerEngine, get_default_rules
     from opentools.chain.stores.postgres_async import PostgresChainStore
 
-    logger.info(
-        "chain rebuild (shared) start: run_id=%s engagement=%s",
-        run_id,
-        engagement_id,
-    )
+    print(f"[CHAIN] rebuild start: run_id={run_id} engagement={engagement_id}", flush=True)
 
     try:
         async with session_factory() as session:
@@ -102,17 +98,18 @@ async def run_rebuild_shared(
             )
 
             # ── Extraction pass ─────────────────────────────────────
+            print(f"[CHAIN] extracting entities from {len(findings)} findings", flush=True)
             entities_extracted_total = 0
-            for f in findings:
+            for i, f in enumerate(findings):
                 try:
                     res = await pipeline.extract_for_finding(
                         f, user_id=user_id, force=True,
                     )
                     entities_extracted_total += res.entities_created
-                except Exception:
-                    logger.exception(
-                        "extract failed for finding %s", f.id,
-                    )
+                except Exception as exc:
+                    print(f"[CHAIN] extract FAILED for {f.id}: {exc}", flush=True)
+                if i % 50 == 0 and i > 0:
+                    print(f"[CHAIN] extracted {i}/{len(findings)}, entities so far: {entities_extracted_total}", flush=True)
 
             # ── Linking pass ────────────────────────────────────────
             # One make_context, reused across all findings to keep
@@ -159,9 +156,8 @@ async def run_rebuild_shared(
             relations_created_total,
         )
     except Exception as exc:
-        logger.exception(
-            "chain rebuild (shared) failed: run_id=%s", run_id,
-        )
+        print(f"[CHAIN] rebuild FAILED: {exc}", flush=True)
+        import traceback; traceback.print_exc()
         try:
             async with session_factory() as fail_session:
                 # Route the failure finalize through the protocol

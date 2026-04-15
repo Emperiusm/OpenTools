@@ -12,6 +12,7 @@ import ChainFilterToolbar from '@/components/ChainFilterToolbar.vue'
 import ChainLegend from '@/components/ChainLegend.vue'
 import ChainTimelineScrubber from '@/components/ChainTimelineScrubber.vue'
 import EngagementFilterChips from '@/components/EngagementFilterChips.vue'
+import ChainEmptyState from '@/components/ChainEmptyState.vue'
 
 const router = useRouter()
 const toast = useToast()
@@ -183,11 +184,10 @@ function toggleLayout() {
     </div>
 
     <div v-else-if="isEmpty" class="flex-1 flex items-center justify-center">
-      <div class="text-center">
-        <i class="pi pi-share-alt text-6xl text-surface-300" />
-        <h2 class="text-xl font-semibold text-surface-500 mt-4">No chain data across engagements</h2>
-        <p class="text-surface-400 mt-2">Run chain analysis on individual engagements first.</p>
-      </div>
+      <ChainEmptyState
+        :engagement-id="engagementIds?.length === 1 ? engagementIds[0] : ''"
+        @rebuild-complete="refetch()"
+      />
     </div>
 
     <template v-else>
