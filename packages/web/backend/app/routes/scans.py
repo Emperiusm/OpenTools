@@ -472,14 +472,76 @@ async def create_scan(
                     except Exception:
                         pass
 
-                # Map tool names to parser names (tools that don't have a
-                # dedicated parser fall through to generic_json)
+                # Map tool names to parser names
                 _TOOL_TO_PARSER = {
                     "nmap": "nmap",
                     "semgrep": "semgrep",
                     "trivy": "trivy",
                     "gitleaks": "gitleaks",
                 }
+
+                def _parse_jsonl(data: bytes, scan_id: str, task_id: str, tool: str):
+                    """Parse JSONL (one JSON object per line) output — used by nuclei, httpx, etc."""
+                    import orjson
+                    findings = []
+                    for line in data.split(b"\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = orjson.loads(line)
+                        except Exception:
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        title = (
+                            obj.get("info", {}).get("name")  # nuclei format
+                            or obj.get("template-id")
+                            or obj.get("title")
+                            or obj.get("name")
+                            or "Finding"
+                        )
+                        sev = (
+                            obj.get("info", {}).get("severity")  # nuclei
+                            or obj.get("severity")
+                            or "info"
+                        )
+                        desc = (
+                            obj.get("info", {}).get("description")
+                            or obj.get("description")
+                            or obj.get("matcher-name", "")
+                        )
+                        matched = obj.get("matched-at") or obj.get("host") or obj.get("url") or ""
+                        evidence = obj.get("extracted-results", obj.get("matcher-name", ""))
+                        if isinstance(evidence, list):
+                            evidence = "; ".join(str(e) for e in evidence)
+                        findings.append({
+                            "title": str(title),
+                            "severity": str(sev),
+                            "description": f"{desc}\n\nMatched: {matched}" if matched else str(desc),
+                            "evidence": str(evidence),
+                            "url": str(matched),
+                        })
+                    return findings
+
+                def _parse_text(data: bytes, tool: str):
+                    """Last-resort: extract findings from plain text output."""
+                    text = data.decode("utf-8", errors="replace")
+                    findings = []
+                    for line in text.strip().split("\n"):
+                        line = line.strip()
+                        if not line or len(line) < 10:
+                            continue
+                        # Skip banner/header lines
+                        if line.startswith(("#", "//", "---", "===", "[*]", "[INF]")):
+                            continue
+                        findings.append({
+                            "title": f"{tool}: {line[:120]}",
+                            "severity": "info",
+                            "description": line,
+                            "evidence": line,
+                        })
+                    return findings[:50]  # cap at 50 per tool
 
                 finding_count = 0
                 for task_obj in tasks:
@@ -500,54 +562,78 @@ async def create_scan(
                         print(f"[SCAN] {scan.id}: no parser available for {task_obj.tool}", flush=True)
                         continue
 
-                    # Validate before parsing
                     data = stdout.encode()
-                    if not parser.validate(data):
-                        # Try generic_json as fallback if tool-specific parser rejects
-                        fallback = parser_router.get("generic_json")
-                        if fallback and fallback is not parser and fallback.validate(data):
-                            parser = fallback
-                        else:
-                            print(f"[SCAN] {scan.id}: {parser.name} rejected output from {task_obj.tool} ({len(data)}b)", flush=True)
-                            continue
+                    parsed_findings = []
 
-                    try:
-                        raw_findings = list(parser.parse(data, scan.id, task_obj.id))
-                        print(f"[SCAN] {scan.id}: {parser.name} parsed {len(raw_findings)} findings from {task_obj.tool}", flush=True)
+                    # Try parsers in order: dedicated → generic_json → JSONL → text
+                    if parser and parser.validate(data):
+                        try:
+                            for rf in parser.parse(data, scan.id, task_obj.id):
+                                parsed_findings.append({
+                                    "title": rf.title,
+                                    "severity": rf.raw_severity,
+                                    "description": rf.description or "",
+                                    "evidence": rf.evidence or "",
+                                    "file_path": rf.file_path,
+                                    "cwe": rf.cwe,
+                                })
+                        except Exception as exc:
+                            print(f"[SCAN] {scan.id}: {parser.name} parse error: {exc}", flush=True)
 
-                        for raw_finding in raw_findings:
-                            from app.models import Finding as WebFinding
+                    if not parsed_findings:
+                        # Try JSONL (nuclei, httpx, etc.)
+                        parsed_findings = _parse_jsonl(data, scan.id, task_obj.id, task_obj.tool)
 
-                            # Map severity: parsers use raw_severity, normalize to our levels
-                            sev = raw_finding.raw_severity.lower()
-                            severity_map = {
-                                "critical": "critical", "high": "high",
-                                "medium": "medium", "low": "low",
-                                "info": "info", "informational": "info",
-                                "warning": "medium", "error": "high",
-                            }
-                            severity = severity_map.get(sev, "info")
+                    if not parsed_findings:
+                        # Try generic JSON
+                        gj = parser_router.get("generic_json")
+                        if gj and gj.validate(data):
+                            try:
+                                for rf in gj.parse(data, scan.id, task_obj.id):
+                                    parsed_findings.append({
+                                        "title": rf.title,
+                                        "severity": rf.raw_severity,
+                                        "description": rf.description or "",
+                                        "evidence": rf.evidence or "",
+                                        "file_path": rf.file_path,
+                                        "cwe": rf.cwe,
+                                    })
+                            except Exception:
+                                pass
 
-                            finding_id = f"fnd-{_uuid.uuid4().hex[:12]}"
-                            finding = WebFinding(
-                                id=finding_id,
-                                engagement_id=scan.engagement_id,
-                                user_id=user.id,
-                                tool=task_obj.tool,
-                                title=raw_finding.title,
-                                description=raw_finding.description or "",
-                                severity=severity,
-                                status="open",
-                                evidence=raw_finding.evidence or "",
-                                file_path=raw_finding.file_path,
-                                cwe=raw_finding.cwe,
-                                created_at=datetime.now(timezone.utc),
-                            )
-                            bg_session.add(finding)
-                            finding_count += 1
-                    except Exception as exc:
-                        print(f"[SCAN] {scan.id}: parse failed for {task_obj.tool}: {exc}", flush=True)
-                        import traceback; traceback.print_exc()
+                    if not parsed_findings:
+                        # Last resort: text parsing
+                        parsed_findings = _parse_text(data, task_obj.tool)
+
+                    print(f"[SCAN] {scan.id}: {task_obj.tool} → {len(parsed_findings)} findings", flush=True)
+
+                    severity_map = {
+                        "critical": "critical", "high": "high",
+                        "medium": "medium", "low": "low",
+                        "info": "info", "informational": "info",
+                        "warning": "medium", "error": "high",
+                    }
+
+                    for pf in parsed_findings:
+                        from app.models import Finding as WebFinding
+                        severity = severity_map.get(str(pf.get("severity", "info")).lower(), "info")
+                        finding_id = f"fnd-{_uuid.uuid4().hex[:12]}"
+                        finding = WebFinding(
+                            id=finding_id,
+                            engagement_id=scan.engagement_id,
+                            user_id=user.id,
+                            tool=task_obj.tool,
+                            title=str(pf.get("title", f"{task_obj.tool} finding"))[:500],
+                            description=str(pf.get("description", ""))[:5000],
+                            severity=severity,
+                            status="open",
+                            evidence=str(pf.get("evidence", ""))[:5000],
+                            file_path=pf.get("file_path"),
+                            cwe=pf.get("cwe"),
+                            created_at=datetime.now(timezone.utc),
+                        )
+                        bg_session.add(finding)
+                        finding_count += 1
 
                 # Update scan record
                 scan_rec = await bg_svc.get_scan(scan.id)
@@ -654,6 +740,21 @@ async def get_scan_tasks(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     tasks = await svc.get_scan_tasks(scan_id)
+
+    # Overlay live engine state if scan is actively running
+    from opentools.scanner.api import _active_scans
+    active = _active_scans.get(scan_id)
+    live_tasks = {}
+    if active:
+        engine = active.get("engine")
+        if engine:
+            for tid, st in engine.tasks.items():
+                live_tasks[tid] = {
+                    "status": st.status.value if hasattr(st.status, "value") else str(st.status),
+                    "duration_ms": getattr(st, "duration_ms", None),
+                    "exit_code": getattr(st, "exit_code", None),
+                }
+
     return {
         "scan_id": scan_id,
         "tasks": [
@@ -662,10 +763,10 @@ async def get_scan_tasks(
                 name=t.name,
                 tool=t.tool,
                 task_type=t.task_type,
-                status=t.status,
+                status=live_tasks.get(t.id, {}).get("status", t.status),
                 priority=t.priority,
                 depends_on=ScanService.parse_json_list(t.depends_on),
-                duration_ms=t.duration_ms,
+                duration_ms=live_tasks.get(t.id, {}).get("duration_ms", t.duration_ms),
             ).model_dump()
             for t in tasks
         ],
