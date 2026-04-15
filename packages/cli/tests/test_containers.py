@@ -76,3 +76,25 @@ def test_logs_returns_output(container_config):
     with patch.object(mgr, "_compose_run", return_value=mock_result):
         output = mgr.logs("nmap-mcp", tail=10)
     assert "some log output" in output
+
+
+class TestPluginContainerStatus:
+    def test_plugin_containers_returned(self, tmp_path):
+        from opentools.containers import get_plugin_container_statuses
+        home = tmp_path / ".opentools"
+        plugin_dir = home / "plugins" / "wifi-hacking" / "1.0.0" / "compose"
+        plugin_dir.mkdir(parents=True)
+        (home / "plugins" / "wifi-hacking" / ".active").write_text("1.0.0")
+        compose = plugin_dir / "docker-compose.yaml"
+        compose.write_text("services:\n  aircrack-mcp:\n    image: test:1.0\n")
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            statuses = get_plugin_container_statuses()
+        assert isinstance(statuses, list)
+
+    def test_no_plugins_returns_empty(self, tmp_path):
+        from opentools.containers import get_plugin_container_statuses
+        home = tmp_path / ".opentools" / "plugins"
+        home.mkdir(parents=True)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            statuses = get_plugin_container_statuses()
+        assert statuses == []
