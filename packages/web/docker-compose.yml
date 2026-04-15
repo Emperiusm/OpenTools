@@ -36,13 +36,18 @@ services:
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
       ENVIRONMENT: ${ENVIRONMENT:-production}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      OPENTOOLS_PLUGIN_DIR: /app/packages/plugin
     depends_on:
       migrate:
         condition: service_completed_successfully
     volumes:
       - appdata:/app/data
+      - //var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
+    networks:
+      - default
+      - mcp-network
 
   nginx:
     image: nginx:alpine
@@ -57,3 +62,9 @@ services:
 volumes:
   pgdata:
   appdata:
+
+networks:
+  default:
+  mcp-network:
+    external: true
+    name: mcp-security-hub_mcp-network
