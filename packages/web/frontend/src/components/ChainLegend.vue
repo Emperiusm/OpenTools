@@ -16,24 +16,69 @@ const severities = [
 </script>
 
 <template>
-  <div class="flex items-center justify-between px-4 py-2 border-t border-surface-700 text-sm">
-    <div class="flex items-center gap-3 flex-wrap">
-      <div v-for="s in severities" :key="s.label" class="flex items-center gap-1">
-        <span class="inline-block w-3 h-3 rounded-full" :style="{ backgroundColor: s.color }" />
+  <div class="legend-bar">
+    <div class="legend-items">
+      <div v-for="s in severities" :key="s.label" class="legend-item">
+        <span class="legend-dot" :style="{ backgroundColor: s.color }"></span>
         <Tag :value="s.label" :style="{ background: s.color + '22', color: s.color, border: 'none', fontSize: '11px', padding: '2px 6px' }" />
       </div>
-      <span class="text-surface-500 mx-2">|</span>
-      <span class="flex items-center gap-1">
-        <span style="width: 20px; height: 2px; background: var(--p-surface-300); display: inline-block;"></span>
-        <span class="text-surface-300 text-xs">Confirmed</span>
-      </span>
-      <span class="flex items-center gap-1">
-        <span style="width: 20px; height: 2px; background: var(--p-surface-500); display: inline-block; border-top: 2px dashed var(--p-surface-500); height: 0;"></span>
-        <span class="text-surface-400 text-xs">Candidate</span>
-      </span>
+      <span class="legend-divider">|</span>
+      <div class="legend-item">
+        <span class="legend-line" style="background: var(--p-surface-300, #ccc);"></span>
+        <span class="legend-text">Confirmed</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-line" style="background: var(--p-surface-500, #888); border-top: 2px dashed var(--p-surface-500, #888); height: 0;"></span>
+        <span class="legend-text" style="color: var(--p-surface-400);">Candidate</span>
+      </div>
     </div>
-    <div class="text-surface-500 text-xs">
+    <div class="legend-count">
       Showing {{ renderedCount }} of {{ totalCount }}
     </div>
   </div>
 </template>
+
+<style scoped>
+.legend-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-top: 1px solid var(--p-surface-700, #333);
+  font-size: 13px;
+}
+.legend-items {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.legend-line {
+  width: 20px;
+  height: 2px;
+  display: inline-block;
+}
+.legend-divider {
+  color: var(--p-surface-500);
+  margin: 0 4px;
+}
+.legend-text {
+  font-size: 12px;
+  color: var(--p-surface-300);
+}
+.legend-count {
+  font-size: 12px;
+  color: var(--p-surface-500);
+}
+</style>
