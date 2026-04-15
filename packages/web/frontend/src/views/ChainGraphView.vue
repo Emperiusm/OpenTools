@@ -11,6 +11,7 @@ import ChainDetailPanel from '@/components/ChainDetailPanel.vue'
 import ChainFilterToolbar from '@/components/ChainFilterToolbar.vue'
 import ChainLegend from '@/components/ChainLegend.vue'
 import ChainEmptyState from '@/components/ChainEmptyState.vue'
+import InlineQueryPanel from '@/components/InlineQueryPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -171,6 +172,10 @@ const { data: engagement } = useQuery({
   queryFn: () =>
     fetch(`/api/v1/engagements/${engId}`, { credentials: 'include' }).then(r => r.json()),
 })
+
+function onQueryHighlight(_nodeIds: string[]) {
+  // Future: highlight matched nodes in the force graph
+}
 </script>
 
 <template>
@@ -194,7 +199,7 @@ const { data: engagement } = useQuery({
     </template>
 
     <template v-else>
-      <div class="flex flex-1 overflow-hidden">
+      <div class="flex flex-1 overflow-hidden relative">
         <ForceGraphCanvas
           :data="graphData"
           :selected-node-id="selectedNode?.id ?? null"
@@ -213,6 +218,7 @@ const { data: engagement } = useQuery({
           @reject="onReject"
           @expand="onExpand"
         />
+        <InlineQueryPanel :engagement-id="engId" @highlight="onQueryHighlight" />
       </div>
     </template>
 
