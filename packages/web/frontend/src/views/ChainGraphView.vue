@@ -173,8 +173,10 @@ const { data: engagement } = useQuery({
     fetch(`/api/v1/engagements/${engId}`, { credentials: 'include' }).then(r => r.json()),
 })
 
-function onQueryHighlight(_nodeIds: string[]) {
-  // Future: highlight matched nodes in the force graph
+const highlightedNodeIds = ref<string[]>([])
+
+function onQueryHighlight(nodeIds: string[]) {
+  highlightedNodeIds.value = nodeIds
 }
 </script>
 
@@ -204,6 +206,7 @@ function onQueryHighlight(_nodeIds: string[]) {
           :data="graphData"
           :selected-node-id="selectedNode?.id ?? null"
           :selected-link-id="selectedLink?.id ?? null"
+          :highlighted-node-ids="highlightedNodeIds"
           class="flex-1"
           @node-click="onNodeClick"
           @link-click="onLinkClick"

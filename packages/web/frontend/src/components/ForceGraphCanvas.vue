@@ -36,6 +36,7 @@ const props = defineProps<{
   data: GraphData
   selectedNodeId: string | null
   selectedLinkId: string | null
+  highlightedNodeIds: string[]
 }>()
 
 const emit = defineEmits<{
@@ -96,6 +97,19 @@ function initGraph() {
       const radius = Math.min(4 + connCount * 0.8, 12)
       const color = SEVERITY_COLORS[n.severity] || '#95a5a6'
       const isSelected = n.id === props.selectedNodeId
+      const isHighlighted = props.highlightedNodeIds.includes(n.id)
+
+      // Highlight glow (from query results)
+      if (isHighlighted) {
+        ctx.save()
+        ctx.shadowColor = '#FFD700'
+        ctx.shadowBlur = 8 / globalScale
+        ctx.beginPath()
+        ctx.arc(node.x, node.y, radius + 2 / globalScale, 0, 2 * Math.PI)
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.3)'
+        ctx.fill()
+        ctx.restore()
+      }
 
       // Circle
       ctx.beginPath()
@@ -282,6 +296,12 @@ watch(() => props.data, (newData) => {
     updateData(newData)
   }
 }, { deep: true })
+
+watch(() => props.highlightedNodeIds, () => {
+  if (graph) {
+    graph.refresh()
+  }
+})
 
 onMounted(() => {
   nextTick(() => initGraph())
