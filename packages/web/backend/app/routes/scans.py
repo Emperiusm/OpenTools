@@ -343,9 +343,25 @@ async def create_scan(
                 elif task.tool == "sqlmap":
                     task.command = f"python /opt/sqlmap/sqlmap.py -u {target_url} --batch --forms --crawl=2 --output-dir=/tmp/sqlmap"
                 elif task.tool == "ffuf":
-                    task.command = f"ffuf -u {target_url}/FUZZ -w /usr/share/wordlists/common.txt -o /tmp/out.json -of json -mc 200,301,302,403"
+                    # Use SecLists common wordlist, copy into container first
+                    task.command = f"sh -c 'ffuf -u {target_url}/FUZZ -w /tmp/common.txt -o - -of json -mc 200,301,302,403 2>/dev/null || true'"
                 elif task.tool == "waybackurls":
                     task.command = f"sh -c 'echo {target_host} | waybackurls'"
+
+            # Copy wordlist into ffuf container if needed
+            if any(t.tool == "ffuf" for t in tasks):
+                import subprocess
+                wordlist = "/app/packages/plugin/wordlists/common.txt"
+                if not os.path.exists(wordlist):
+                    # Try SecLists on host
+                    seclists = os.environ.get("SECLISTS_PATH", "/opt/SecLists")
+                    alt = os.path.join(seclists, "Discovery/Web-Content/common.txt")
+                    if os.path.exists(alt):
+                        wordlist = alt
+                try:
+                    subprocess.run(["docker", "cp", wordlist, "ffuf-mcp:/tmp/common.txt"], capture_output=True, timeout=10)
+                except Exception:
+                    pass
 
             # Rewrite task commands to go through docker exec
             for task in tasks:

@@ -45,6 +45,7 @@ services:
       - appdata:/app/data
       - //var/run/docker.sock:/var/run/docker.sock
       - ${WORKSPACE_DIR:-C:/Users/slabl/workspace}:/workspace
+      - ${SECLISTS_PATH:-C:/Users/slabl/Tools/SecLists}:/opt/SecLists:ro
     ports:
       - "8000:8000"
     networks:
