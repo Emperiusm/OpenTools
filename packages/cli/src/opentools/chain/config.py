@@ -137,6 +137,16 @@ class QueryConfig(BaseModel):
     graph_cache_size: int = 8
 
 
+class CypherConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    timeout_seconds: float = 30.0
+    max_rows: int = 1000
+    intermediate_binding_cap: int = 10_000
+    max_var_length_hops: int = 10
+    virtual_graph_cache_size: int = 4
+
+
 class ChainConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -146,6 +156,7 @@ class ChainConfig(BaseModel):
     linker: LinkerConfig = LinkerConfig()
     llm: LLMConfig = LLMConfig()
     query: QueryConfig = QueryConfig()
+    cypher: CypherConfig = CypherConfig()
 
 
 _config_singleton: ChainConfig | None = None
