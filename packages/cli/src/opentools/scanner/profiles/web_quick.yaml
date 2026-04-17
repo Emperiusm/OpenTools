@@ -9,7 +9,7 @@ phases:
     tools:
       - tool: whatweb
         task_type: shell
-        command_template: "docker exec whatweb-mcp sh -c \"whatweb --color=never --log-json=/tmp/whatweb.json {target} > /dev/null 2>&1; cat /tmp/whatweb.json\""
+        command_template: "docker exec whatweb-mcp sh -c \"F=/tmp/whatweb-{scan_id}.json; rm -f $F; whatweb --color=never --log-json=$F {target} > /dev/null 2>&1; cat $F; rm -f $F\""
         parser: whatweb
         priority: 10
         tier: fast
@@ -27,7 +27,11 @@ phases:
     tools:
       - tool: nuclei
         task_type: shell
-        command_template: "docker exec nuclei-mcp nuclei -u {target} -jsonl -silent -severity critical,high,medium,low,info"
+        # -as enables automatic scan: nuclei fingerprints the target and
+        # selects relevant templates based on detected technology. This
+        # catches tech-specific CVEs (WebLogic, DVWA, GraphQL endpoints,
+        # etc.) that severity-based template selection alone misses.
+        command_template: "docker exec nuclei-mcp nuclei -u {target} -jsonl -silent -as -severity critical,high,medium,low,info"
         parser: nuclei
         priority: 30
         tier: normal
@@ -35,7 +39,7 @@ phases:
         preferred_output_format: json
       - tool: nikto
         task_type: shell
-        command_template: "docker exec nikto-mcp sh -c \"nikto -h {target} -Format json -output /tmp/nikto.json -maxtime 180 >/dev/null 2>&1; cat /tmp/nikto.json\""
+        command_template: "docker exec nikto-mcp sh -c \"F=/tmp/nikto-{scan_id}.json; rm -f $F; nikto -h {target} -Format json -output $F -maxtime 180 >/dev/null 2>&1; cat $F; rm -f $F\""
         parser: nikto
         priority: 40
         tier: normal

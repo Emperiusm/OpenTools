@@ -294,13 +294,46 @@ async def scan_run(
         for t in tasks:
             await store.save_task(t)
 
+        # Synthesize vulnerability-class findings for known-vulnerable-by-
+        # design applications (DVWA, DVGA, RestFlaw, etc.). When
+        # fingerprinting detects such an app, its documented vulnerability
+        # classes are attached as additional findings so downstream
+        # analysis can reason about the attack surface without an active
+        # exploit phase.
+        synthesized_count = 0
+        try:
+            raw_findings = await store.get_raw_findings(result.id)
+            from opentools.scanner.known_vuln_apps import (
+                synthesize_from_detections,
+            )
+
+            synthesized = synthesize_from_detections(
+                raw_findings,
+                scan_id=result.id,
+                scan_task_id=tasks[0].id if tasks else result.id,
+                scan_target=result.target,
+            )
+            for sf in synthesized:
+                await store.save_raw_finding(sf)
+            synthesized_count = len(synthesized)
+            if synthesized_count:
+                # Re-read so the subsequent engagement import picks them up.
+                raw_findings = await store.get_raw_findings(result.id)
+                result.finding_count = len(raw_findings)
+                await store.save_scan(result)
+        except Exception as synth_exc:
+            console.print(
+                f"[yellow]Warning:[/yellow] known-vuln-app synthesis "
+                f"skipped: {synth_exc}"
+            )
+            raw_findings = await store.get_raw_findings(result.id)
+
         # Bridge scan findings into the engagement findings table so that
         # attack-chain extraction, reports, and the dashboard can consume
         # them without a manual import step.
         imported_count = 0
         if engagement and engagement != "ephemeral":
             try:
-                raw_findings = await store.get_raw_findings(result.id)
                 imported_count = _import_to_engagement(
                     raw_findings, engagement
                 )
@@ -325,6 +358,10 @@ async def scan_run(
             out.print(f"  Target: {result.target}")
             out.print(f"  Profile: {result.profile or 'auto'}")
             out.print(f"  Findings: {result.finding_count}")
+            if synthesized_count:
+                out.print(
+                    f"  Known-vuln-app expansions: {synthesized_count}"
+                )
             if imported_count:
                 out.print(
                     f"  Imported to engagement: {imported_count} finding(s)"
