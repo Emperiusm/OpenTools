@@ -53,8 +53,23 @@ console = Console()
 
 
 def _default_db_path() -> Path:
-    """Return the default database path used by the CLI."""
-    return Path.home() / ".opentools" / "engagements.db"
+    """Return the default database path used by the CLI.
+
+    Resolution order matches the main CLI's ``_get_store`` so chain and
+    engagement commands share a single database:
+
+    1. ``<plugin_dir>/../../engagements/opentools.db`` when
+       ``OPENTOOLS_PLUGIN_DIR`` is set or the plugin dir can be discovered.
+    2. ``~/.opentools/engagements.db`` as a fallback for stand-alone use
+       outside a repo checkout.
+    """
+    try:
+        from opentools.plugin import discover_plugin_dir
+
+        plugin_dir = discover_plugin_dir()
+        return plugin_dir.parent.parent / "engagements" / "opentools.db"
+    except Exception:
+        return Path.home() / ".opentools" / "engagements.db"
 
 
 def _async_command(coro_fn):
