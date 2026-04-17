@@ -26,8 +26,8 @@ node_modules/
 # Git worktrees
 .worktrees/
 
-# Profiling output
-profiles/
+# Profiling output (not scanner/plugin profile definitions — those are code)
+/profiles/
 
 # TypeScript build output
 *.tsbuildinfo

@@ -498,17 +498,30 @@ class ScanPlanner:
         if template is None:
             return None
 
-        # Extract host from URL for {target_host}
+        # Extract host and port for substitution placeholders.
         target_host = target
+        target_port = ""
         if "://" in target:
             from urllib.parse import urlparse
             parsed = urlparse(target)
             target_host = parsed.hostname or target
+            target_port = str(parsed.port) if parsed.port else ""
+        elif ":" in target and "/" not in target:
+            # host:port form (e.g. "pentest-ground.com:6379")
+            host_part, _, port_part = target.rpartition(":")
+            if port_part.isdigit():
+                target_host = host_part
+                target_port = port_part
+
+        # Default to a common port range when no explicit port was given —
+        # avoids producing a syntactically invalid `-p ` argument for nmap.
+        port_or_range = target_port or "1-10000"
 
         replacements = {
             "{target}": target,
             "{scan_id}": scan_id,
             "{target_host}": target_host,
+            "{target_port}": port_or_range,
             "{target_hash}": metadata.get("content_hash", "unknown"),
             "{tool}": "",  # filled per-tool if needed
         }

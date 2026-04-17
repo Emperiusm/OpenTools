@@ -279,6 +279,14 @@ class TargetDetector:
                 return True
             except ValueError:
                 pass
+        # Hostname:port pattern (e.g. ``example.com:6379``). Must have a dot in
+        # the hostname and a numeric port. This is how users express a TCP
+        # service target like Redis, SSH, or Postgres.
+        match = re.match(r"^([\w\-]+(?:\.[\w\-]+)+):(\d{1,5})$", target)
+        if match:
+            port = int(match.group(2))
+            if 1 <= port <= 65535:
+                return True
         return False
 
     def _is_docker_image(self, target: str) -> bool:

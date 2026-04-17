@@ -1,0 +1,38 @@
+id: app-server
+name: Application Server Scan
+description: Focused scan for Java app servers (WebLogic, Tomcat, JBoss) and
+  similar enterprise middleware — combines nuclei templates tagged for the
+  relevant technology with nikto for misconfiguration surface.
+target_types:
+  - url
+phases:
+  - name: fingerprint
+    parallel: true
+    tools:
+      - tool: whatweb
+        task_type: shell
+        command_template: "docker exec whatweb-mcp sh -c \"whatweb --color=never --log-json=/tmp/whatweb.json {target} > /dev/null 2>&1; cat /tmp/whatweb.json\""
+        parser: whatweb
+        priority: 10
+        tier: fast
+        resource_group: shell
+        preferred_output_format: json
+  - name: vuln-scan
+    parallel: true
+    tools:
+      - tool: nuclei
+        task_type: shell
+        command_template: "docker exec nuclei-mcp nuclei -u {target} -jsonl -silent -tags weblogic,oracle,java,tomcat,jboss,websphere -severity critical,high,medium,low,info"
+        parser: nuclei
+        priority: 20
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
+      - tool: nikto
+        task_type: shell
+        command_template: "docker exec nikto-mcp sh -c \"nikto -h {target} -Format json -output /tmp/nikto.json -maxtime 180 >/dev/null 2>&1; cat /tmp/nikto.json\""
+        parser: nikto
+        priority: 30
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json

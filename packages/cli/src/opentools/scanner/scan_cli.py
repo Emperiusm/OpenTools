@@ -51,6 +51,54 @@ async def _get_store():
     return store
 
 
+def _engagement_db_path() -> Optional[Path]:
+    """Return the engagement DB path the main CLI uses.
+
+    Falls back to ``None`` if the plugin dir cannot be discovered (e.g.,
+    outside a repo checkout). Callers should skip bridging in that case.
+    """
+    try:
+        from opentools.plugin import discover_plugin_dir
+
+        plugin_dir = discover_plugin_dir()
+        return plugin_dir.parent.parent / "engagements" / "opentools.db"
+    except Exception:
+        return None
+
+
+def _import_to_engagement(
+    raw_findings: list,
+    engagement_ref: str,
+) -> int:
+    """Bridge scanner RawFindings into the engagement findings table.
+
+    ``engagement_ref`` may be an engagement id, an id prefix, or a name.
+    Returns the number of findings imported.
+    """
+    from opentools.engagement.store import EngagementStore
+    from opentools.scanner.engagement_bridge import import_scan_findings
+
+    db = _engagement_db_path()
+    if db is None:
+        return 0
+
+    es = EngagementStore(db_path=db)
+    engagements = es.list_all()
+    match = next(
+        (
+            e
+            for e in engagements
+            if e.id == engagement_ref
+            or e.name == engagement_ref
+            or e.id.startswith(engagement_ref)
+        ),
+        None,
+    )
+    if match is None:
+        return 0
+    return import_scan_findings(raw_findings, match.id, es)
+
+
 # ---------------------------------------------------------------------------
 # scan profiles
 # ---------------------------------------------------------------------------
@@ -246,6 +294,22 @@ async def scan_run(
         for t in tasks:
             await store.save_task(t)
 
+        # Bridge scan findings into the engagement findings table so that
+        # attack-chain extraction, reports, and the dashboard can consume
+        # them without a manual import step.
+        imported_count = 0
+        if engagement and engagement != "ephemeral":
+            try:
+                raw_findings = await store.get_raw_findings(result.id)
+                imported_count = _import_to_engagement(
+                    raw_findings, engagement
+                )
+            except Exception as bridge_exc:
+                console.print(
+                    f"[yellow]Warning:[/yellow] findings not imported to "
+                    f"engagement: {bridge_exc}"
+                )
+
         if json_output:
             out.print(result.model_dump_json(indent=2))
         else:
@@ -261,6 +325,10 @@ async def scan_run(
             out.print(f"  Target: {result.target}")
             out.print(f"  Profile: {result.profile or 'auto'}")
             out.print(f"  Findings: {result.finding_count}")
+            if imported_count:
+                out.print(
+                    f"  Imported to engagement: {imported_count} finding(s)"
+                )
     finally:
         await store.close()
 
