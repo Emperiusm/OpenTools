@@ -1,0 +1,28 @@
+id: redis-audit
+name: Redis Service Audit
+description: Redis-specific security audit — port detection + nuclei network
+  templates for known Redis CVEs (CVE-2022-0543 Lua sandbox escape etc.).
+target_types:
+  - network
+phases:
+  - name: port-scan
+    parallel: true
+    tools:
+      - tool: nmap
+        task_type: shell
+        command_template: "docker exec nmap-mcp sh -c \"nmap -sV -sC -Pn -p {target_port} -oX - {target_host}\""
+        parser: nmap
+        priority: 10
+        tier: fast
+        resource_group: shell
+  - name: vuln-scan
+    parallel: true
+    tools:
+      - tool: nuclei
+        task_type: shell
+        command_template: "docker exec nuclei-mcp nuclei -u redis://{target_host}:{target_port} -jsonl -silent"
+        parser: nuclei
+        priority: 20
+        tier: normal
+        resource_group: shell
+        preferred_output_format: json
