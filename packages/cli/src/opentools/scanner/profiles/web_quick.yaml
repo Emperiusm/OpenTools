@@ -9,7 +9,7 @@ phases:
     tools:
       - tool: whatweb
         task_type: shell
-        command_template: "whatweb --color=never --log-json=- {target}"
+        command_template: "docker exec whatweb-mcp sh -c \"whatweb --color=never --log-json=/tmp/whatweb.json {target} > /dev/null 2>&1; cat /tmp/whatweb.json\""
         parser: whatweb
         priority: 10
         tier: fast
@@ -17,7 +17,7 @@ phases:
         preferred_output_format: json
       - tool: waybackurls
         task_type: shell
-        command_template: "echo {target_host} | waybackurls"
+        command_template: "docker exec waybackurls-mcp sh -c \"echo {target_host} | waybackurls\""
         parser: waybackurls
         priority: 20
         tier: fast
@@ -27,7 +27,7 @@ phases:
     tools:
       - tool: nuclei
         task_type: shell
-        command_template: "nuclei -u {target} -json"
+        command_template: "docker exec nuclei-mcp nuclei -u {target} -jsonl -silent -severity critical,high,medium,low,info"
         parser: nuclei
         priority: 30
         tier: normal
@@ -35,7 +35,7 @@ phases:
         preferred_output_format: json
       - tool: nikto
         task_type: shell
-        command_template: "nikto -h {target} -Format json"
+        command_template: "docker exec nikto-mcp sh -c \"nikto -h {target} -Format json -output /tmp/nikto.json -maxtime 180 >/dev/null 2>&1; cat /tmp/nikto.json\""
         parser: nikto
         priority: 40
         tier: normal

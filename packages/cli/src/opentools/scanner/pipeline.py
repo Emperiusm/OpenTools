@@ -87,6 +87,26 @@ class ScanPipeline:
             self.router.register(GenericJsonParser())
         except ImportError:
             pass
+        try:
+            from opentools.scanner.parsing.parsers.nuclei import NucleiParser
+            self.router.register(NucleiParser())
+        except ImportError:
+            pass
+        try:
+            from opentools.scanner.parsing.parsers.nikto import NiktoParser
+            self.router.register(NiktoParser())
+        except ImportError:
+            pass
+        try:
+            from opentools.scanner.parsing.parsers.whatweb import WhatWebParser
+            self.router.register(WhatWebParser())
+        except ImportError:
+            pass
+        try:
+            from opentools.scanner.parsing.parsers.waybackurls import WaybackurlsParser
+            self.router.register(WaybackurlsParser())
+        except ImportError:
+            pass
 
     async def process_task_output(
         self,
