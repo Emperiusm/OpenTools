@@ -45,13 +45,13 @@ function formatCell(value: any): string {
 
 <style scoped>
 .query-results { overflow: auto; }
-.stats { padding: 4px 8px; font-size: 0.85em; color: #666; }
-.truncated { color: #e67e22; }
+.stats { padding: 8px 12px; font-size: 0.85em; color: var(--p-surface-400); }
+.truncated { color: var(--p-orange-400); }
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; font-size: 13px; }
-th { font-weight: 600; background: #f8f8f8; position: sticky; top: 0; }
-tr:hover { background: #f0f8ff; cursor: pointer; }
-.error { color: #e74c3c; padding: 8px; }
-.loading { padding: 8px; color: #666; }
-.no-results { padding: 8px; color: #999; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--p-surface-700, #333); text-align: left; font-size: 13px; }
+th { font-weight: 600; background: var(--p-surface-800, #1e1e2e); position: sticky; top: 0; color: var(--p-surface-200); }
+tr:hover { background: var(--p-surface-800, #1e1e2e); cursor: pointer; }
+.error { color: var(--p-red-400); padding: 8px; }
+.loading { padding: 8px; color: var(--p-surface-400); }
+.no-results { padding: 12px; color: var(--p-surface-500); text-align: center; }
 </style>

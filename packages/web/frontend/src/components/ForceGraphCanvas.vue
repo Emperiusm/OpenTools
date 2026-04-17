@@ -130,8 +130,10 @@ function countConnections(nodeId: string): number {
 function initGraph() {
   if (!container.value) return
 
+  // Deep-clone to strip Vue reactivity — force-graph mutates nodes (vx, vy, x, y)
+  const rawData = JSON.parse(JSON.stringify(props.data))
   graph = new ForceGraph(container.value)
-    .graphData(props.data)
+    .graphData(rawData)
     .nodeId('id')
     .linkSource('source')
     .linkTarget('target')
@@ -438,7 +440,8 @@ function updateData(newData: GraphData) {
     }
   }
 
-  graph.graphData(newData)
+  // Deep-clone to strip Vue reactivity
+  graph.graphData(JSON.parse(JSON.stringify(newData)))
 }
 
 watch(() => props.data, (newData) => {

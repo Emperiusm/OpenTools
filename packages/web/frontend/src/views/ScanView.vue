@@ -211,7 +211,7 @@ function toggleScan(scanId: string) {
     <Card class="mb-5">
       <template #title>New Scan</template>
       <template #content>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <div class="form-grid mb-4">
           <div class="flex flex-col gap-1">
             <label class="text-sm font-medium">Target Type</label>
             <Select v-model="targetType" :options="targetTypeOptions" optionLabel="label" optionValue="value" class="w-full" />
@@ -316,16 +316,16 @@ function toggleScan(scanId: string) {
         </DataTable>
 
         <!-- Expanded Task Detail -->
-        <div v-if="activeScanId" class="mt-3 p-3 border-1 surface-border rounded">
-          <h3 class="text-sm font-semibold mb-2 text-surface-600">
+        <div v-if="activeScanId" class="task-detail-panel mt-3 p-3 rounded">
+          <h3 class="text-sm font-semibold mb-2 text-surface-300">
             Tasks for {{ scans.find(s => s.id === activeScanId)?.target }}
           </h3>
           <div v-if="!scanTasks[activeScanId]" class="flex justify-center py-3">
             <ProgressSpinner style="width: 24px; height: 24px" />
           </div>
-          <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <div v-else class="task-grid">
             <div v-for="task in scanTasks[activeScanId]" :key="task.id"
-              class="flex items-center gap-2 p-2 rounded surface-ground">
+              class="task-card flex items-center gap-2 p-2 rounded">
               <i :class="taskStatusIcon(task.status)" :style="taskStatusColor(task.status)"></i>
               <div class="flex-1 min-w-0">
                 <div class="font-medium text-sm truncate">{{ task.name }}</div>
@@ -347,5 +347,26 @@ function toggleScan(scanId: string) {
   padding: 16px;
   max-width: 1100px;
   margin: 0 auto;
+}
+.task-detail-panel {
+  border: 1px solid var(--p-surface-700, #333);
+  background: var(--p-surface-900, #1a1a2e);
+}
+.task-card {
+  background: var(--p-surface-800, #16213e);
+  border: 1px solid var(--p-surface-700, #333);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+.task-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.5rem;
+}
+@media (max-width: 768px) {
+  .form-grid { grid-template-columns: 1fr; }
 }
 </style>
