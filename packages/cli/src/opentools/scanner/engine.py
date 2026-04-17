@@ -159,7 +159,11 @@ class ScanEngine:
 
     async def run(self) -> None:
         """Execute the full task DAG."""
+        from datetime import datetime, timezone
+
         self.scan.status = ScanStatus.RUNNING
+        if self.scan.started_at is None:
+            self.scan.started_at = datetime.now(timezone.utc)
         await self._schedule_loop()
         self._finalize()
 
@@ -420,13 +424,33 @@ class ScanEngine:
             to_skip.extend(self._dependents.get(dep_id, set()))
 
     def _finalize(self) -> None:
-        """Set final scan status based on task outcomes."""
+        """Set final scan status and populate summary fields from task outcomes."""
+        from datetime import datetime, timezone
+
         if self._cancellation.is_cancelled:
             self.scan.status = ScanStatus.CANCELLED
         elif self._completed:
             self.scan.status = ScanStatus.COMPLETED
         else:
             self.scan.status = ScanStatus.FAILED
+
+        # Populate tools_completed / tools_failed from the task map.
+        # Tools are identified by task.name (one scan task per tool in the profile).
+        completed_tools: list[str] = []
+        failed_tools: list[str] = []
+        for task_id, task in self._tasks.items():
+            if task_id in self._completed:
+                completed_tools.append(task.name)
+            elif task_id in self._failed:
+                failed_tools.append(task.name)
+
+        # Deduplicate while preserving order
+        self.scan.tools_completed = list(dict.fromkeys(completed_tools))
+        self.scan.tools_failed = list(dict.fromkeys(failed_tools))
+
+        # Stamp completed_at if not already set
+        if self.scan.completed_at is None:
+            self.scan.completed_at = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
     # Pipeline processing

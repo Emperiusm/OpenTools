@@ -223,7 +223,28 @@ async def scan_run(
         for t in tasks:
             await store.save_task(t)
 
-        result = await api.execute(scan, tasks)
+        result = await api.execute(scan, tasks, store=store)
+
+        # Populate finding_count from the pipeline-persisted deduplicated
+        # findings. The engine updates scan summary fields but has no way to
+        # know how many findings the pipeline emitted — that lives in the store.
+        try:
+            scan_findings = await store.get_scan_findings(result.id)
+            result.finding_count = len(scan_findings)
+        except Exception:
+            pass
+
+        # Persist the final scan state (status, tools_completed, finding_count).
+        # The in-memory scan is updated by the engine, but the DB row still
+        # reflects the initial "pending" save unless we write the terminal
+        # state back through the store.
+        await store.save_scan(result)
+
+        # Persist terminal task state (status, exit_code, stdout, stderr, duration_ms).
+        # Tasks are mutated in memory by the engine but never re-saved, so the
+        # initial "pending" rows would otherwise remain stale after completion.
+        for t in tasks:
+            await store.save_task(t)
 
         if json_output:
             out.print(result.model_dump_json(indent=2))

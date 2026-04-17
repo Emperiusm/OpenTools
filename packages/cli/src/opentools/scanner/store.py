@@ -240,10 +240,15 @@ class SqliteScanStore:
     # ------------------------------------------------------------------
 
     async def save_scan(self, scan: Scan) -> None:
-        """Insert a scan record (JSON blob)."""
+        """Upsert a scan record (JSON blob).
+
+        Idempotent — safe to call both during plan (initial persist) and
+        after execute (terminal state persist). Uses INSERT OR REPLACE so
+        subsequent saves overwrite the row with the latest scan state.
+        """
         conn = self._require_conn()
         await conn.execute(
-            "INSERT INTO scan (id, data) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO scan (id, data) VALUES (?, ?)",
             (scan.id, scan.model_dump_json()),
         )
         await conn.commit()
@@ -289,10 +294,14 @@ class SqliteScanStore:
     # ------------------------------------------------------------------
 
     async def save_task(self, task: ScanTask) -> None:
-        """Insert a task record (JSON blob)."""
+        """Upsert a task record (JSON blob).
+
+        Idempotent — safe to call before execution (to persist planned state)
+        and after (to persist terminal state with stdout/stderr/exit_code).
+        """
         conn = self._require_conn()
         await conn.execute(
-            "INSERT INTO scan_task (id, scan_id, data) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO scan_task (id, scan_id, data) VALUES (?, ?, ?)",
             (task.id, task.scan_id, task.model_dump_json()),
         )
         await conn.commit()
