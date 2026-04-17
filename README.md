@@ -11,6 +11,7 @@
   <a href="#cli">CLI</a> &bull;
   <a href="#scanner">Scanner</a> &bull;
   <a href="#attack-chains">Attack Chains</a> &bull;
+  <a href="#plugin-marketplace">Plugin Marketplace</a> &bull;
   <a href="#web-dashboard">Web Dashboard</a> &bull;
   <a href="#architecture">Architecture</a> &bull;
   <a href="#tools">Tools</a> &bull;
@@ -21,12 +22,12 @@
 </p>
 
 <p align="center">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-1350%2B%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-1370%2B%20passing-brightgreen">
   <img alt="Skills" src="https://img.shields.io/badge/skills-6-blue">
   <img alt="Tools" src="https://img.shields.io/badge/tools-50%2B-orange">
-  <img alt="Lines" src="https://img.shields.io/badge/lines-33K%20Python%20%7C%201.7K%20TypeScript-yellow">
+  <img alt="Lines" src="https://img.shields.io/badge/lines-40K%20Python%20%7C%204K%20TypeScript-yellow">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4">
-  <img alt="PRs" src="https://img.shields.io/badge/PRs-10%20merged-purple">
+  <img alt="PRs" src="https://img.shields.io/badge/PRs-18%20merged-purple">
 </p>
 
 ---
@@ -249,7 +250,17 @@ opentools
 │   ├── entities [--type T]                  # List entities
 │   ├── path --from X --to Y                 # K-shortest path query
 │   ├── query <preset>                       # Run a named preset query
+│   ├── query run <cypher>                   # Run a Cypher-style DSL query
+│   ├── query session                        # Interactive DSL session
 │   └── export <engagement>                  # Export chain data
+│
+├── plugin                                   # (22 subcommands)
+│   ├── list / search / info                 # Browse plugins
+│   ├── install / uninstall / update         # Transactional lifecycle
+│   ├── up / down / logs / exec              # Docker compose integration
+│   ├── pull / setup / link / sync           # Registry + local dev
+│   ├── import / export                      # Portable bundles
+│   └── verify / doctor                      # Integrity + health checks
 │
 ├── config
 │   ├── show                                 # Print resolved config
@@ -297,15 +308,17 @@ The scan orchestration pipeline executes multi-tool security scans as a DAG (dir
 
 ### Scan Profiles
 
-Eight built-in YAML profiles for common scenarios:
+Ten built-in YAML profiles for common scenarios:
 
 | Profile | Tools | Use Case |
 |---------|-------|----------|
 | `source_quick` | Semgrep, Gitleaks | Fast source code sweep |
 | `source_full` | Semgrep, Gitleaks, Trivy | Comprehensive source audit |
-| `web_quick` | Nuclei, Nikto | Quick web app scan |
+| `web_quick` | WhatWeb, Nuclei (auto-scan), Nikto | Quick web app scan |
 | `web_full` | Nuclei, Nikto, ffuf, SQLMap | Full web app assessment |
-| `network_recon` | Nmap, Masscan | Network reconnaissance |
+| `app_server` | WhatWeb, Nuclei (weblogic/oracle/java tags), Nikto | Java app servers — WebLogic, Tomcat, JBoss |
+| `network_recon` | Nmap (via `nmap-mcp`), Masscan | Network reconnaissance — supports `hostname:port` targets |
+| `redis_audit` | Nmap, Nuclei (TCP/network templates) | Dedicated Redis service audit (CVE-2022-0543) |
 | `container_audit` | Trivy | Container image audit |
 | `binary_triage` | Capa, YARA, Binwalk | Binary analysis triage |
 | `apk_analysis` | JADX, Gitleaks | Android APK analysis |
@@ -331,6 +344,26 @@ Target → TargetDetector → ScanPlanner → ScanEngine → Parsers → Pipelin
 - **Correlation** — cross-finding relation detection, remediation grouping
 - **Confidence scoring** — corroboration from multiple tools boosts confidence, time decay reduces it
 
+### Known-Vulnerable App Detection
+
+Deliberately-vulnerable training targets (DVWA, DVGA, RestFlaw, WebGoat, bWAPP, Juice Shop, GuardianLeaks, ShadowLogic, CipherHeart) advertise their vulnerability classes as part of their purpose. When fingerprinting identifies one of these apps, the scanner synthesizes concrete findings for each documented class — closing a coverage gap where unauthenticated scanners would otherwise see only banners.
+
+- **Title + URL matching** — substring match against WhatWeb/nuclei detection titles, with URL fallbacks for hosts whose HTML title doesn't contain the app name
+- **Target-scoped** — matching constrained to the scan's primary target host:port to prevent spurious expansions from historical URLs
+- **Per-scan output paths** — whatweb/nikto write to `/tmp/<tool>-{scan_id}.json` instead of a shared path, eliminating cross-scan contamination
+
+### Automated Scan → Engagement → Chain Pipeline
+
+`opentools scan run -e <engagement>` runs the full pipeline end-to-end without manual intervention:
+
+1. **Scan** — DAG execution against the target
+2. **Synthesis** — `synthesize_from_detections` emits vuln-class findings from known-app fingerprints
+3. **Engagement import** — `engagement_bridge.import_scan_findings` converts RawFinding rows into engagement Finding records, deduping by `(scan_id, tool, title, file_path)`
+4. **Chain rebuild** — entity extraction + relation linking runs automatically
+5. **Queries ready** — `chain path` / `chain query preset` return attack paths immediately
+
+Unified DB path — `chain/cli.py` now resolves to `<repo>/engagements/opentools.db` by default, matching the main CLI so findings written by one are visible to the other.
+
 ---
 
 ## Attack Chains
@@ -350,12 +383,64 @@ The chain subsystem extracts security entities (hosts, CVEs, credentials, malwar
 - **Preset queries** — `crown_jewel`, `lateral_movement`, `priv_esc_chains`, `external_to_internal`, `mitre_coverage`
 - **Export** — chain data exportable as JSON for downstream tooling
 
+### Cypher-Style Query DSL
+
+A domain-specific query language modeled on Neo4j Cypher for expressing complex chain traversals. Parsed with Lark, planned against an in-memory virtual graph, and executed with resource limits (node visits, path depth, time).
+
+```cypher
+MATCH (h:host)-[:exposes]->(s:service)-[:vulnerable_to]->(c:cve)
+WHERE c.severity = "critical"
+RETURN h.address, s.port, c.id
+```
+
+- **Grammar** — `MATCH` / `WHERE` / `RETURN` with variable-length path patterns (`-[:rel*1..3]->`)
+- **Planner** — rewrites queries into index-backed lookups before virtualization
+- **Plugin API** — `chain/plugin_api.py` lets plugins register custom functions and relation types
+- **Session state** — `chain query session` for interactive exploration with variable binding across queries
+
 ### Async Store Protocol
 
 Chain data is persisted via `ChainStoreProtocol` with pluggable async backends:
 
 - **aiosqlite** — local single-user CLI usage
 - **PostgreSQL (SQLAlchemy)** — multi-user web dashboard
+
+---
+
+## Plugin Marketplace
+
+Phase 3E ships a plugin system for distributing skills, recipes, and Docker-packaged tools with integrity verification and sandboxed execution.
+
+### Plugin CLI
+
+```
+opentools plugin
+├── list / search / info                  # Browse local + registry plugins
+├── install / uninstall / update          # Transactional lifecycle with rollback
+├── up / down / logs / exec               # Docker compose integration
+├── pull / setup / link / sync            # Registry + local development flows
+├── import / export                       # Portable plugin bundles
+├── verify / doctor                       # Integrity + health checks
+└── (22 subcommands total)
+```
+
+### Plugin Core (`packages/plugin-core/`)
+
+| Module | Purpose |
+|--------|---------|
+| `models.py` | Pydantic v2 manifest, catalog, registry schemas |
+| `index.py` | SQLite plugin index with integrity tracking |
+| `cache.py` | Content-addressable plugin cache |
+| `registry.py` | Registry client with catalog caching + search |
+| `resolver.py` | Dependency resolver (cycle + conflict detection) |
+| `verify.py` | Sigstore signature + SHA256 verification |
+| `installer.py` | Transactional installer with staging and atomic promotion |
+| `updater.py` | Version pruning + rollback on failure |
+| `compose.py` | Per-plugin docker compose generator with sandbox injection |
+| `sandbox.py` | Mount blocklist policy with organization-level overrides |
+| `enforcement.py` | Recipe command enforcement via shlex parsing |
+| `content_advisor.py` | Skill content advisory scanner |
+| `errors.py` | `PluginError` hierarchy with actionable hints |
 
 ---
 
@@ -471,14 +556,19 @@ opentools dashboard --engagement my-audit
 │    │   ├── mutation/ ── analyzers, strategies, kill chain state   │
 │    │   ├── infra/ ── cloud providers, proxy tunnel, sweeper      │
 │    │   ├── approval.py ── HITL gate registry                     │
+│    │   ├── known_vuln_apps.py ── synthesize findings from banner │
+│    │   ├── engagement_bridge.py ── raw findings → engagement DB  │
 │    │   └── store.py ── scan-specific SQLite store                │
 │    ├── chain/                                                    │
 │    │   ├── extractors/ ── regex, parser-aware, LLM              │
 │    │   ├── linker/ ── rule engine, LLM pass, graph cache         │
+│    │   ├── cypher/ ── Lark grammar, planner, executor, session   │
 │    │   ├── query/ ── path queries, presets, graph cache          │
+│    │   ├── plugin_api.py ── custom functions + relation types    │
 │    │   └── stores/ ── async SQLite, async PostgreSQL             │
 │    ├── correlation/ ── cross-engagement IOC engine               │
 │    ├── dashboard/ ── Textual TUI (optional)                      │
+│    ├── plugin_cli.py ── 22 plugin subcommands                    │
 │    ├── recipes.py ── asyncio DAG executor                        │
 │    ├── findings.py ── CWE inference + dedup + SARIF              │
 │    ├── stix_export.py ── STIX 2.1 bundle builder                │
@@ -513,7 +603,8 @@ opentools dashboard --engagement my-audit
 | Package | Purpose | Key Files |
 |---|---|---|
 | `packages/plugin/` | Claude Code plugin — AI knowledge layer | 6 SKILL.md files, 9 commands, 5 recipes, YAML config |
-| `packages/cli/` | Python CLI — deterministic orchestration | 120+ modules, 1090+ tests, typer entry point |
+| `packages/cli/` | Python CLI — deterministic orchestration | 140+ modules, 1370+ tests, typer entry point |
+| `packages/plugin-core/` | Plugin marketplace core library | Manifest models, registry, resolver, installer, sandbox, sigstore verifier |
 | `packages/web/backend/` | FastAPI web API — multi-user dashboard | SQLAlchemy models, 11 route modules, Alembic migrations |
 | `packages/web/frontend/` | Vue 3 SPA — browser dashboard | PrimeVue components, Pinia stores, Chart.js visualizations |
 | `docs/specs/` | Design specifications | Architecture decisions, data models, API contracts |
@@ -676,7 +767,7 @@ python -m pytest tests/ -v
 ### Project Stats
 
 ```
-3 packages | 240+ source files | 1,350+ tests | 33K Python + 1.7K TypeScript | 10 PRs merged
+4 packages | 260+ source files | 1,370+ tests | 40K Python + 4K TypeScript | 18 PRs merged
 ```
 
 ### Tech Stack
@@ -795,13 +886,44 @@ The parser router auto-discovers parser modules — no registration needed.
 - [x] FastAPI gate endpoints — list/approve/reject with write-before-signal guarantee
 - [x] Command injection guard for strategy-spawned tasks
 
+### Phase 3C: Chain Visualization & Query DSL
+
+- [x] Phase 3C.2 — per-engagement attack chain graph view (force-directed)
+- [x] Phase 3C.3 — global chain view, Bayesian confidence calibration, timeline, swim lanes, scoring, export
+- [x] Phase 3C.4 — Cypher-style DSL with Lark grammar, planner, executor, session state
+- [x] Plugin API for custom relation types and query functions
+
+### Phase 3E: Plugin Marketplace
+
+- [x] Pydantic v2 manifest, catalog, and registry models
+- [x] SQLite plugin index with integrity tracking
+- [x] Content-addressable plugin cache
+- [x] Registry client with catalog caching and search
+- [x] Dependency resolver with cycle and conflict detection
+- [x] Sigstore and SHA256 signature verification
+- [x] Transactional installer with staging + atomic promotion + rollback
+- [x] Per-plugin docker compose generator with sandbox injection
+- [x] Sandbox policy with mount blocklist and org-level overrides
+- [x] Skill content advisory scanner
+- [x] Recipe command enforcement with shlex parsing
+- [x] `opentools plugin` CLI — 22 subcommands covering install, update, compose, registry, dev flows
+
+### Phase 3F: Scan-to-Chain Automation
+
+- [x] End-to-end `scan run -e <engagement>` pipeline — scan → synthesize → import → chain rebuild
+- [x] `engagement_bridge.import_scan_findings` — RawFinding → engagement Finding with dedup
+- [x] `known_vuln_apps` synthesis — DVWA/DVGA/RestFlaw/WebGoat/GuardianLeaks/ShadowLogic/CipherHeart coverage
+- [x] `app_server` profile — WebLogic/Tomcat/JBoss templates (CVE-2023-21839 verified)
+- [x] `redis_audit` profile — Redis TCP templates (CVE-2022-0543 verified)
+- [x] `hostname:port` target support + `{target_port}` placeholder for TCP service scans
+- [x] Unified DB path between `chain/cli.py` and main CLI
+
 ### Phase 4 (Planned)
 
-- [ ] Attack chain visualization (linked findings → narrative graph)
 - [ ] Team collaboration — shared engagements, finding assignment, comments
-- [ ] Bayesian confidence calibration for finding scoring
-- [ ] Cypher-style DSL for chain queries
-- [ ] Plugin marketplace integration
+- [ ] Public plugin registry with community-contributed plugins
+- [ ] Authenticated DAST crawling for DVWA-class targets (POST fuzzing, CSRF token handling)
+- [ ] Chain narrative generation from DSL query results
 
 ---
 
